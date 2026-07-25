@@ -16,7 +16,8 @@ export function Sidebar({
   onAddContact: () => void;
   onLinkPeer: () => void;
 }) {
-  const { identity, contacts, activeAddr, selectContact, peerCount } = useApp();
+  const { identity, contacts, activeAddr, selectContact, peerCount, netOnline } = useApp();
+  const reach = peerCount + (netOnline ? 1 : 0);
 
   return (
     <aside
@@ -30,10 +31,11 @@ export function Sidebar({
           </span>
           <span
             className="tag"
-            style={{ color: peerCount > 0 ? "var(--accent)" : "var(--fg-dim)", borderColor: peerCount > 0 ? "var(--accent-dim)" : "var(--line-bright)" }}
-            title="live peer links"
+            style={{ color: reach > 0 ? "var(--accent)" : "var(--fg-dim)", borderColor: reach > 0 ? "var(--accent-dim)" : "var(--line-bright)" }}
+            title={`${netOnline ? "relay online" : "relay offline"} · ${peerCount} direct peer link${peerCount === 1 ? "" : "s"}`}
           >
-            ◉ {peerCount} peer{peerCount === 1 ? "" : "s"}
+            {reach > 0 ? "◉" : "○"} {netOnline ? "online" : "offline"}
+            {peerCount > 0 ? ` · ${peerCount}p2p` : ""}
           </span>
         </div>
         <button

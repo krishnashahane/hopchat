@@ -90,8 +90,13 @@ export class RelayTransport implements Transport {
     });
   }
 
+  isOnline(): boolean {
+    return this.online;
+  }
+
   peers(): string[] {
-    return this.online ? ["relay"] : [];
+    // The relay is infrastructure, not a peer; connectivity is reported via status.
+    return [];
   }
 
   close(): void {

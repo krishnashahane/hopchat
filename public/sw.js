@@ -8,7 +8,7 @@
  *   - Everything else same-origin: stale-while-revalidate.
  * Cross-origin (e.g. STUN) requests are never intercepted.
  */
-const VERSION = "hopchat-v2";
+const VERSION = "hopchat-v3";
 const SHELL = `${VERSION}-shell`;
 const RUNTIME = `${VERSION}-runtime`;
 const APP_SHELL = ["/", "/manifest.webmanifest", "/icon.svg"];

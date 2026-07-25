@@ -34,6 +34,7 @@ interface AppState {
   activeAddr: string | null;
   messages: ChatMessage[];
   peerCount: number;
+  netOnline: boolean;
   error: string | null;
   createIdentity: (passphrase?: string) => Promise<void>;
   unlock: (passphrase: string) => Promise<void>;
@@ -53,6 +54,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [activeAddr, setActiveAddr] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [peerCount, setPeerCount] = useState(0);
+  const [netOnline, setNetOnline] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const messengerRef = useRef<Messenger | null>(null);
   const activeRef = useRef<string | null>(null);
@@ -63,6 +65,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     messengerRef.current = m;
     m.subscribe((e) => {
       if (e.type === "peers") setPeerCount(e.count);
+      if (e.type === "net") setNetOnline(e.online);
       if (e.type === "contact") {
         void db.listContacts().then(setContacts);
       }
@@ -195,6 +198,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     activeAddr,
     messages,
     peerCount,
+    netOnline,
     error,
     createIdentity,
     unlock,

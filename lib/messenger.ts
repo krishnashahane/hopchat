@@ -39,7 +39,8 @@ export type MessengerEvent =
   | { type: "message"; message: ChatMessage }
   | { type: "status"; message: ChatMessage }
   | { type: "contact"; contact: Contact }
-  | { type: "peers"; count: number };
+  | { type: "peers"; count: number }
+  | { type: "net"; online: boolean };
 
 export class Messenger {
   private readonly router: MeshRouter;
@@ -55,9 +56,8 @@ export class Messenger {
     this.localbus = new LocalBusTransport(identity.address);
     this.webrtc = new WebRTCMeshTransport();
     this.relay = new RelayTransport(identity.address);
-    const onLink = () => this.emit({ type: "peers", count: this.peerCount() });
-    this.webrtc.onStatusChange(onLink);
-    this.relay.onStatusChange(onLink);
+    this.webrtc.onStatusChange(() => this.emit({ type: "peers", count: this.peerCount() }));
+    this.relay.onStatusChange((online) => this.emit({ type: "net", online }));
     this.router.addTransport(this.localbus);
     this.router.addTransport(this.webrtc);
     this.router.addTransport(this.relay);
