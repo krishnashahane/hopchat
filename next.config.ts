@@ -42,6 +42,18 @@ const nextConfig: NextConfig = {
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },
+  async redirects() {
+    // Canonical domain: force www → apex so there is exactly one preferred host.
+    // HTTP → HTTPS is enforced by Vercel's edge + the HSTS preload header above.
+    return [
+      {
+        source: "/:path*",
+        has: [{ type: "host", value: "www.hopchat.in" }],
+        destination: "https://hopchat.in/:path*",
+        permanent: true,
+      },
+    ];
+  },
 };
 
 export default nextConfig;
