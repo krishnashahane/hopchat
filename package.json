@@ -1,0 +1,42 @@
+{
+  "name": "hopchat",
+  "version": "0.1.0",
+  "private": true,
+  "description": "HopChat — decentralized, offline-first, end-to-end encrypted mesh messaging.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@noble/ciphers": "^1.2.1",
+    "@noble/curves": "^1.8.1",
+    "@noble/hashes": "^1.7.1",
+    "@noble/post-quantum": "^0.4.1",
+    "idb": "^8.0.2",
+    "next": "^16.0.1",
+    "qrcode": "^1.5.4",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.0.9",
+    "@types/node": "^22.13.5",
+    "@types/qrcode": "^1.5.5",
+    "@types/react": "^19.0.10",
+    "@types/react-dom": "^19.0.4",
+    "tailwindcss": "^4.0.9",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.7"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "overrides": {
+    "sharp": "^0.35.3",
+    "postcss": "^8.5.23"
+  }
+}
