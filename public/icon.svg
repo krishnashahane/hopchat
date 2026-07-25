@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#05070a"/>
+  <g fill="none" stroke="#00ff9c" stroke-width="14" stroke-linecap="round">
+    <circle cx="128" cy="160" r="34" fill="#05070a"/>
+    <circle cx="384" cy="160" r="34" fill="#05070a"/>
+    <circle cx="256" cy="352" r="42" fill="#05070a"/>
+    <line x1="150" y1="178" x2="234" y2="330"/>
+    <line x1="362" y1="178" x2="278" y2="330"/>
+    <line x1="162" y1="160" x2="350" y2="160"/>
+  </g>
+  <circle cx="128" cy="160" r="10" fill="#00ff9c"/>
+  <circle cx="384" cy="160" r="10" fill="#00ff9c"/>
+  <circle cx="256" cy="352" r="12" fill="#00ff9c"/>
+  <text x="256" y="452" font-family="ui-monospace, monospace" font-size="64" font-weight="700"
+        fill="#00ff9c" text-anchor="middle" letter-spacing="4">HOP</text>
+</svg>

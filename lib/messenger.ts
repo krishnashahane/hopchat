@@ -1,15 +1,15 @@
 /**
- * Messenger — application service binding identity, crypto, mesh and storage.
+ * Messenger — application service binding identity, ratcheted crypto, mesh, storage.
  *
- * Flow:
- *   send:    plaintext → seal (hybrid PQC E2E) → MeshPacket → flood over transports.
- *   receive: MeshPacket → open envelope → persist → emit → return delivery ack.
- *
- * Relays only ever see opaque sealed envelopes. Only endpoints hold the keys.
+ * Every conversation runs a Double Ratchet session seeded by a hybrid post-quantum
+ * handshake (PQXDH). The initiator attaches its handshake offer to outgoing packets
+ * until the session is confirmed (surviving mesh packet loss). Relays only ever see
+ * opaque ratchet ciphertext; the routing hints (to/from) are the only cleartext.
  */
 import type { Identity } from "@/lib/crypto/identity";
-import { decodePublicBundle } from "@/lib/crypto/identity";
-import { seal, open, type SealedEnvelope } from "@/lib/crypto/e2e";
+import { decodePublicBundle, deriveAddress, fingerprintHex, encodePublicBundle } from "@/lib/crypto/identity";
+import { initiateHandshake, respondHandshake, type HandshakeOffer } from "@/lib/crypto/handshake";
+import { DoubleRatchet, type RatchetMessage } from "@/lib/crypto/ratchet";
 import { utf8, fromUtf8 } from "@/lib/crypto/encoding";
 import { MeshRouter } from "@/lib/mesh/router";
 import { LocalBusTransport } from "@/lib/mesh/localbus";
@@ -21,9 +21,23 @@ type Wire =
   | { t: "msg"; id: string; body: string; ts: number; ex?: number }
   | { t: "ack"; id: string; status: "delivered" | "read" };
 
+interface RatchetPacket {
+  hs?: HandshakeOffer;
+  msg: RatchetMessage;
+}
+
+interface Session {
+  peer: string;
+  role: "initiator" | "responder";
+  established: boolean;
+  ratchet: DoubleRatchet;
+  offer?: HandshakeOffer;
+}
+
 export type MessengerEvent =
   | { type: "message"; message: ChatMessage }
   | { type: "status"; message: ChatMessage }
+  | { type: "contact"; contact: Contact }
   | { type: "peers"; count: number };
 
 export class Messenger {
@@ -31,7 +45,8 @@ export class Messenger {
   readonly webrtc: WebRTCMeshTransport;
   private readonly localbus: LocalBusTransport;
   private readonly listeners = new Set<(e: MessengerEvent) => void>();
-  private readonly contactsByAddr = new Map<string, Contact>();
+  private readonly contacts = new Map<string, Contact>();
+  private readonly sessions = new Map<string, Session>();
 
   constructor(private readonly identity: Identity) {
     this.router = new MeshRouter({ selfId: identity.address, defaultTtl: 8 });
@@ -43,9 +58,17 @@ export class Messenger {
     this.router.onDeliver((p) => void this.handleDeliver(p));
   }
 
-  async loadContacts(): Promise<void> {
-    const list = await db.listContacts();
-    for (const c of list) this.contactsByAddr.set(c.address, c);
+  async load(): Promise<void> {
+    for (const c of await db.listContacts()) this.contacts.set(c.address, c);
+    for (const s of await db.loadSessions()) {
+      this.sessions.set(s.peer, {
+        peer: s.peer,
+        role: s.role,
+        established: s.established,
+        ratchet: DoubleRatchet.deserialize(s.ratchet),
+        offer: s.offer ? (JSON.parse(s.offer) as HandshakeOffer) : undefined,
+      });
+    }
   }
 
   subscribe(cb: (e: MessengerEvent) => void): () => void {
@@ -62,62 +85,119 @@ export class Messenger {
   }
 
   registerContact(c: Contact): void {
-    this.contactsByAddr.set(c.address, c);
+    this.contacts.set(c.address, c);
   }
 
-  /** Encrypt and flood a chat message to a contact. Persists an outbound record. */
+  private async persist(s: Session): Promise<void> {
+    await db.saveSession({
+      peer: s.peer,
+      role: s.role,
+      established: s.established,
+      ratchet: s.ratchet.serialize(),
+      offer: s.offer ? JSON.stringify(s.offer) : undefined,
+    });
+  }
+
+  private senderSession(contact: Contact): Session {
+    const existing = this.sessions.get(contact.address);
+    if (existing) return existing;
+    const bundle = decodePublicBundle(contact.bundle);
+    const { sk, offer } = initiateHandshake(this.identity, bundle);
+    const session: Session = {
+      peer: contact.address,
+      role: "initiator",
+      established: false,
+      ratchet: DoubleRatchet.initSender(sk, bundle.kex),
+      offer,
+    };
+    this.sessions.set(contact.address, session);
+    return session;
+  }
+
+  /** Encrypt and flood a chat message to a contact. */
   async sendMessage(contact: Contact, body: string, selfDestructMs?: number): Promise<ChatMessage> {
     const id = crypto.randomUUID();
     const now = Date.now();
     const expiresAt = selfDestructMs ? now + selfDestructMs : undefined;
     const wire: Wire = { t: "msg", id, body, ts: now, ex: expiresAt };
 
-    const bundle = decodePublicBundle(contact.bundle);
-    const envelope = seal(this.identity, bundle, utf8(JSON.stringify(wire)));
+    const session = this.senderSession(contact);
+    const msg = session.ratchet.encrypt(utf8(JSON.stringify(wire)));
+    const packet: RatchetPacket = { msg, hs: session.established ? undefined : session.offer };
+    await this.persist(session);
 
-    const record: ChatMessage = {
-      id,
-      peer: contact.address,
-      direction: "out",
-      body,
-      createdAt: now,
-      status: "sent",
-      expiresAt,
-    };
+    const record: ChatMessage = { id, peer: contact.address, direction: "out", body, createdAt: now, status: "sent", expiresAt };
     await db.addMessage(record);
-
-    this.route(contact.address, "msg", envelope, id);
+    this.router.send({ id, to: contact.address, kind: "msg", payload: packet });
     return record;
   }
 
-  private route(to: string, kind: MeshPacket["kind"], payload: SealedEnvelope, id?: string): void {
-    this.router.send({ id: id ?? crypto.randomUUID(), to, kind, payload });
+  private async resolveSession(from: string, hs?: HandshakeOffer): Promise<Session | null> {
+    const existing = this.sessions.get(from);
+    if (!hs) return existing ?? null;
+
+    // Adopt a responder session from the handshake when we have none, or when a
+    // simultaneous-initiation (glare) tie-break makes the peer the canonical initiator.
+    const glareYield =
+      existing?.role === "initiator" && !existing.established && from < this.identity.address;
+    if (existing && !glareYield) return existing;
+
+    const peerBundle = decodePublicBundle(hs.ik);
+    const peerAddr = deriveAddress(peerBundle);
+    const sk = respondHandshake(this.identity, peerBundle, hs);
+    const session: Session = {
+      peer: peerAddr,
+      role: "responder",
+      established: true,
+      ratchet: DoubleRatchet.initReceiver(sk, {
+        sk: this.identity.secretKeys.kex,
+        pk: this.identity.publicKeys.kex,
+      }),
+    };
+    this.sessions.set(peerAddr, session);
+
+    if (!this.contacts.has(peerAddr)) {
+      const contact: Contact = {
+        address: peerAddr,
+        fingerprint: fingerprintHex(peerBundle),
+        bundle: encodePublicBundle(peerBundle),
+        nickname: peerAddr.replace("HOP-", "").slice(0, 9),
+        verified: false,
+        addedAt: Date.now(),
+      };
+      await db.upsertContact(contact);
+      this.contacts.set(peerAddr, contact);
+      this.emit({ type: "contact", contact });
+    }
+    return session;
   }
 
   private async handleDeliver(packet: MeshPacket): Promise<void> {
-    let opened: { wire: Wire; senderAddr: string };
+    const payload = packet.payload as RatchetPacket;
+    if (!payload || typeof payload !== "object" || !payload.msg) return;
+
+    let session: Session | null;
     try {
-      const env = packet.payload as SealedEnvelope;
-      const { plaintext, senderSign } = open(this.identity, env);
-      const wire = JSON.parse(fromUtf8(plaintext)) as Wire;
-      opened = { wire, senderAddr: packet.from };
-      // Bind the on-wire sender to a known contact's signing key when possible.
-      const contact = this.contactsByAddr.get(packet.from);
-      if (contact) {
-        const known = decodePublicBundle(contact.bundle).sign;
-        if (known.length !== senderSign.length || !known.every((b, i) => b === senderSign[i])) {
-          return; // signing key does not match claimed contact — drop.
-        }
-      }
+      session = await this.resolveSession(packet.from, payload.hs);
     } catch {
-      return; // not for us, or tampered — silently drop.
+      return; // unresolvable handshake — drop.
+    }
+    if (!session) return;
+
+    let wire: Wire;
+    try {
+      wire = JSON.parse(fromUtf8(session.ratchet.decrypt(payload.msg))) as Wire;
+    } catch {
+      return; // not for us, out-of-session, or tampered — drop.
     }
 
-    const { wire, senderAddr } = opened;
+    if (session.role === "initiator" && !session.established) session.established = true;
+    await this.persist(session);
+
     if (wire.t === "msg") {
       const record: ChatMessage = {
         id: wire.id,
-        peer: senderAddr,
+        peer: session.peer,
         direction: "in",
         body: wire.body,
         createdAt: wire.ts,
@@ -127,16 +207,16 @@ export class Messenger {
       await db.addMessage(record);
       this.emit({ type: "message", message: record });
 
-      // Return a delivery ack (encrypted) if we know how to reach the sender.
-      const contact = this.contactsByAddr.get(senderAddr);
+      const contact = this.contacts.get(session.peer);
       if (contact) {
         const ack: Wire = { t: "ack", id: wire.id, status: "delivered" };
-        const env = seal(this.identity, decodePublicBundle(contact.bundle), utf8(JSON.stringify(ack)));
-        this.route(senderAddr, "ack", env);
+        const ackMsg = session.ratchet.encrypt(utf8(JSON.stringify(ack)));
+        await this.persist(session);
+        this.router.send({ id: crypto.randomUUID(), to: session.peer, kind: "ack", payload: { msg: ackMsg } });
       }
     } else if (wire.t === "ack") {
-      const existing = await db.listMessages(senderAddr);
-      const msg = existing.find((m) => m.id === wire.id);
+      const list = await db.listMessages(session.peer);
+      const msg = list.find((m) => m.id === wire.id);
       if (msg && msg.status !== "read") {
         msg.status = wire.status;
         await db.updateMessage(msg);

@@ -59,11 +59,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const bootMessenger = useCallback(async (id: Identity) => {
     const m = new Messenger(id);
-    await m.loadContacts();
+    await m.load();
     messengerRef.current = m;
     m.subscribe((e) => {
       if (e.type === "peers") setPeerCount(e.count);
+      if (e.type === "contact") {
+        void db.listContacts().then(setContacts);
+      }
       if (e.type === "message" || e.type === "status") {
+        void db.listContacts().then(setContacts);
         if (activeRef.current && e.message.peer === activeRef.current) {
           void db.listMessages(activeRef.current).then(setMessages);
         }

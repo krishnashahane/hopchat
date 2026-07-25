@@ -6,6 +6,16 @@
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
 import type { Contact, ChatMessage } from "@/lib/types";
 import type { SealedVault } from "@/lib/crypto/vault";
+import type { SerializedRatchet } from "@/lib/crypto/ratchet";
+
+export interface StoredSession {
+  peer: string;
+  role: "initiator" | "responder";
+  established: boolean;
+  ratchet: SerializedRatchet;
+  /** Pending handshake offer JSON, retransmitted until established (initiator only). */
+  offer?: string;
+}
 
 interface HopDB extends DBSchema {
   identity: {
@@ -22,20 +32,29 @@ interface HopDB extends DBSchema {
     value: ChatMessage;
     indexes: { byPeer: string; byCreatedAt: number };
   };
+  sessions: {
+    key: string;
+    value: StoredSession;
+  };
 }
 
 let dbPromise: Promise<IDBPDatabase<HopDB>> | null = null;
 
 function getDB(): Promise<IDBPDatabase<HopDB>> {
   if (!dbPromise) {
-    dbPromise = openDB<HopDB>("hopchat", 1, {
-      upgrade(db) {
-        db.createObjectStore("identity", { keyPath: "id" });
-        const contacts = db.createObjectStore("contacts", { keyPath: "address" });
-        contacts.createIndex("byAddedAt", "addedAt");
-        const messages = db.createObjectStore("messages", { keyPath: "id" });
-        messages.createIndex("byPeer", "peer");
-        messages.createIndex("byCreatedAt", "createdAt");
+    dbPromise = openDB<HopDB>("hopchat", 2, {
+      upgrade(db, oldVersion) {
+        if (oldVersion < 1) {
+          db.createObjectStore("identity", { keyPath: "id" });
+          const contacts = db.createObjectStore("contacts", { keyPath: "address" });
+          contacts.createIndex("byAddedAt", "addedAt");
+          const messages = db.createObjectStore("messages", { keyPath: "id" });
+          messages.createIndex("byPeer", "peer");
+          messages.createIndex("byCreatedAt", "createdAt");
+        }
+        if (oldVersion < 2) {
+          db.createObjectStore("sessions", { keyPath: "peer" });
+        }
       },
     });
   }
@@ -64,7 +83,18 @@ export async function clearAll(): Promise<void> {
     db.clear("identity"),
     db.clear("contacts"),
     db.clear("messages"),
+    db.clear("sessions"),
   ]);
+}
+
+export async function saveSession(s: StoredSession): Promise<void> {
+  const db = await getDB();
+  await db.put("sessions", s);
+}
+
+export async function loadSessions(): Promise<StoredSession[]> {
+  const db = await getDB();
+  return db.getAll("sessions");
 }
 
 export async function upsertContact(c: Contact): Promise<void> {
