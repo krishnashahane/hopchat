@@ -14,6 +14,7 @@ import { utf8, fromUtf8 } from "@/lib/crypto/encoding";
 import { MeshRouter } from "@/lib/mesh/router";
 import { LocalBusTransport } from "@/lib/mesh/localbus";
 import { WebRTCMeshTransport } from "@/lib/mesh/webrtc";
+import { RelayTransport } from "@/lib/mesh/relay";
 import type { Contact, ChatMessage, MeshPacket } from "@/lib/types";
 import * as db from "@/lib/storage/db";
 
@@ -44,6 +45,7 @@ export class Messenger {
   private readonly router: MeshRouter;
   readonly webrtc: WebRTCMeshTransport;
   private readonly localbus: LocalBusTransport;
+  private readonly relay: RelayTransport;
   private readonly listeners = new Set<(e: MessengerEvent) => void>();
   private readonly contacts = new Map<string, Contact>();
   private readonly sessions = new Map<string, Session>();
@@ -52,10 +54,15 @@ export class Messenger {
     this.router = new MeshRouter({ selfId: identity.address, defaultTtl: 8 });
     this.localbus = new LocalBusTransport(identity.address);
     this.webrtc = new WebRTCMeshTransport();
-    this.webrtc.onStatusChange(() => this.emit({ type: "peers", count: this.peerCount() }));
+    this.relay = new RelayTransport(identity.address);
+    const onLink = () => this.emit({ type: "peers", count: this.peerCount() });
+    this.webrtc.onStatusChange(onLink);
+    this.relay.onStatusChange(onLink);
     this.router.addTransport(this.localbus);
     this.router.addTransport(this.webrtc);
+    this.router.addTransport(this.relay);
     this.router.onDeliver((p) => void this.handleDeliver(p));
+    this.relay.start();
   }
 
   async load(): Promise<void> {
