@@ -35,6 +35,8 @@ interface AppState {
   messages: ChatMessage[];
   peerCount: number;
   netOnline: boolean;
+  relayEnabled: boolean;
+  setRelayEnabled: (on: boolean) => void;
   error: string | null;
   createIdentity: (passphrase?: string) => Promise<void>;
   unlock: (passphrase: string) => Promise<void>;
@@ -55,6 +57,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [peerCount, setPeerCount] = useState(0);
   const [netOnline, setNetOnline] = useState(false);
+  const [relayEnabled, setRelayEnabledState] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const messengerRef = useRef<Messenger | null>(null);
   const activeRef = useRef<string | null>(null);
@@ -78,9 +81,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     });
     const list = await db.listContacts();
     setContacts(list);
+    // Apply the saved relay preference (default on).
+    const pref = typeof localStorage !== "undefined" ? localStorage.getItem("hop.relay") !== "0" : true;
+    m.setRelayEnabled(pref);
+    setRelayEnabledState(pref);
     setIdentity(id);
     setPhase("ready");
     void db.purgeExpired();
+  }, []);
+
+  const setRelayEnabled = useCallback((on: boolean) => {
+    messengerRef.current?.setRelayEnabled(on);
+    setRelayEnabledState(on);
+    if (typeof localStorage !== "undefined") localStorage.setItem("hop.relay", on ? "1" : "0");
   }, []);
 
   // Initial load: decide onboarding / unlock / ready.
@@ -199,6 +212,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     messages,
     peerCount,
     netOnline,
+    relayEnabled,
+    setRelayEnabled,
     error,
     createIdentity,
     unlock,

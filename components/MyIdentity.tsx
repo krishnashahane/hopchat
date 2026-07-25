@@ -6,7 +6,7 @@ import { QR } from "./QR";
 import { useApp } from "@/lib/hooks/useApp";
 
 export function MyIdentity({ onClose }: { onClose: () => void }) {
-  const { identity, myBundle, reset } = useApp();
+  const { identity, myBundle, reset, relayEnabled, setRelayEnabled, netOnline } = useApp();
   const [confirmReset, setConfirmReset] = useState(false);
   if (!identity || !myBundle) return null;
 
@@ -39,6 +39,36 @@ export function MyIdentity({ onClose }: { onClose: () => void }) {
             {identity.fingerprint}
           </div>
         </details>
+
+        <div style={{ borderTop: "1px solid var(--line)", paddingTop: 12 }}>
+          <div style={{ fontSize: 11, color: "var(--fg-dim)", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+            network
+          </div>
+          <label
+            style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", padding: "6px 0" }}
+          >
+            <span>
+              <span style={{ color: "var(--fg)" }}>internet relay</span>
+              <span style={{ display: "block", fontSize: 10, color: "var(--fg-dim)" }}>
+                reach peers across any network · E2E, relay sees only ciphertext
+              </span>
+            </span>
+            <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 10, color: relayEnabled && netOnline ? "var(--accent)" : "var(--fg-dim)" }}>
+                {relayEnabled ? (netOnline ? "online" : "connecting") : "off"}
+              </span>
+              <input
+                type="checkbox"
+                checked={relayEnabled}
+                onChange={(e) => setRelayEnabled(e.target.checked)}
+                style={{ width: 16, height: 16, accentColor: "var(--accent)" }}
+              />
+            </span>
+          </label>
+          <div style={{ fontSize: 10, color: "var(--fg-dim)", marginTop: 4 }}>
+            off = local-only mesh (same-device + direct WebRTC links).
+          </div>
+        </div>
 
         <div style={{ borderTop: "1px solid var(--line)", paddingTop: 12 }}>
           {!confirmReset ? (

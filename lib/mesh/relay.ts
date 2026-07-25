@@ -20,6 +20,7 @@ export class RelayTransport implements Transport {
   private abort: AbortController | null = null;
   private running = false;
   private online = false;
+  private enabled = true;
   private onStatus: ((online: boolean) => void) | null = null;
   private readonly selfId: string;
   private readonly bundle: string;
@@ -47,9 +48,20 @@ export class RelayTransport implements Transport {
 
   /** Begin the long-poll receive loop. Safe to call once, browser-only. */
   start(): void {
-    if (this.running || typeof window === "undefined") return;
+    if (this.running || !this.enabled || typeof window === "undefined") return;
     this.running = true;
     void this.loop();
+  }
+
+  /** User-facing toggle: enable/disable the internet relay transport at runtime. */
+  setEnabled(on: boolean): void {
+    this.enabled = on;
+    if (on) this.start();
+    else this.close();
+  }
+
+  isEnabled(): boolean {
+    return this.enabled;
   }
 
   private setOnline(v: boolean): void {
@@ -96,7 +108,7 @@ export class RelayTransport implements Transport {
   }
 
   broadcast(packet: MeshPacket): void {
-    if (typeof window === "undefined") return;
+    if (!this.enabled || typeof window === "undefined") return;
     void fetch("/api/relay", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -119,5 +131,6 @@ export class RelayTransport implements Transport {
   close(): void {
     this.running = false;
     this.abort?.abort();
+    this.setOnline(false);
   }
 }

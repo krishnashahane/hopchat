@@ -91,6 +91,16 @@ export class Messenger {
     return this.router.peerCount();
   }
 
+  /** Toggle the internet-relay transport (user-controlled). */
+  setRelayEnabled(on: boolean): void {
+    this.relay.setEnabled(on);
+    if (!on) this.emit({ type: "net", online: false });
+  }
+
+  isRelayEnabled(): boolean {
+    return this.relay.isEnabled();
+  }
+
   registerContact(c: Contact): void {
     this.contacts.set(c.address, c);
   }
