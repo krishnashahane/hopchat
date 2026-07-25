@@ -160,6 +160,39 @@ body::after {
   50% { opacity: 0; }
 }
 
+/* Responsive workspace: two panes on desktop, single pane with drill-in on mobile. */
+.workspace {
+  height: 100%;
+  display: grid;
+  grid-template-columns: clamp(240px, 28vw, 320px) 1fr;
+  min-height: 0;
+}
+.sidebar-pane,
+.chat-pane {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+.mobile-only {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+  .workspace[data-view="list"] .chat-pane {
+    display: none;
+  }
+  .workspace[data-view="chat"] .sidebar-pane {
+    display: none;
+  }
+  .mobile-only {
+    display: inline-flex;
+  }
+}
+
 .fade-in {
   animation: fadeIn 0.25s ease both;
 }

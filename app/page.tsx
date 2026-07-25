@@ -12,22 +12,24 @@ import { LinkPeer } from "@/components/LinkPeer";
 type ModalKind = "identity" | "contact" | "link" | null;
 
 function Workspace() {
-  const { phase } = useApp();
+  const { phase, activeAddr } = useApp();
   const [modal, setModal] = useState<ModalKind>(null);
 
   if (phase !== "ready") return <BootScreen />;
 
+  // data-view drives the mobile single-pane behaviour (see globals.css).
   return (
-    <div
-      className="h-full grid"
-      style={{ gridTemplateColumns: "clamp(240px, 28vw, 320px) 1fr" }}
-    >
-      <Sidebar
-        onIdentity={() => setModal("identity")}
-        onAddContact={() => setModal("contact")}
-        onLinkPeer={() => setModal("link")}
-      />
-      <ChatPanel />
+    <div className="workspace" data-view={activeAddr ? "chat" : "list"}>
+      <div className="sidebar-pane">
+        <Sidebar
+          onIdentity={() => setModal("identity")}
+          onAddContact={() => setModal("contact")}
+          onLinkPeer={() => setModal("link")}
+        />
+      </div>
+      <div className="chat-pane">
+        <ChatPanel />
+      </div>
       {modal === "identity" && <MyIdentity onClose={() => setModal(null)} />}
       {modal === "contact" && <AddContact onClose={() => setModal(null)} />}
       {modal === "link" && <LinkPeer onClose={() => setModal(null)} />}

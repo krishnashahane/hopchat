@@ -53,7 +53,7 @@ function Bubble({ m }: { m: ChatMessage }) {
 }
 
 export function ChatPanel() {
-  const { activeAddr, contacts, messages, send } = useApp();
+  const { activeAddr, contacts, messages, send, deselect } = useApp();
   const [text, setText] = useState("");
   const [destruct, setDestruct] = useState<number>(0);
   const endRef = useRef<HTMLDivElement>(null);
@@ -85,11 +85,24 @@ export function ChatPanel() {
 
   return (
     <div className="flex-1 flex flex-col h-full" style={{ minWidth: 0 }}>
-      <div className="px-4 py-3" style={{ borderBottom: "1px solid var(--line)", background: "var(--bg-elev)" }}>
-        <div style={{ color: "var(--accent)" }} className="glow">
-          {contact.nickname}
+      <div
+        className="px-4 py-3"
+        style={{ borderBottom: "1px solid var(--line)", background: "var(--bg-elev)", display: "flex", alignItems: "center", gap: 10 }}
+      >
+        <button
+          className="btn mobile-only"
+          onClick={deselect}
+          style={{ padding: "6px 10px" }}
+          aria-label="back to contacts"
+        >
+          ‹
+        </button>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ color: "var(--accent)" }} className="glow">
+            {contact.nickname}
+          </div>
+          <div style={{ fontSize: 11, color: "var(--fg-dim)", wordBreak: "break-all" }}>{contact.address}</div>
         </div>
-        <div style={{ fontSize: 11, color: "var(--fg-dim)", wordBreak: "break-all" }}>{contact.address}</div>
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-4" style={{ minHeight: 0 }}>

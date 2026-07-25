@@ -42,6 +42,7 @@ interface AppState {
   unlock: (passphrase: string) => Promise<void>;
   addContact: (bundle: string, nickname: string) => Promise<Contact>;
   selectContact: (addr: string) => Promise<void>;
+  deselect: () => void;
   send: (body: string, selfDestructMs?: number) => Promise<void>;
   reset: () => Promise<void>;
   myBundle: string | null;
@@ -174,6 +175,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setMessages(await db.listMessages(addr));
   }, []);
 
+  const deselect = useCallback(() => {
+    activeRef.current = null;
+    setActiveAddr(null);
+    setMessages([]);
+  }, []);
+
   const send = useCallback(
     async (body: string, selfDestructMs?: number) => {
       const m = messengerRef.current;
@@ -219,6 +226,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     unlock,
     addContact,
     selectContact,
+    deselect,
     send,
     reset,
     myBundle,
