@@ -9,6 +9,10 @@
  */
 import type { Transport } from "./router";
 import type { MeshPacket } from "@/lib/types";
+import type { Identity } from "@/lib/crypto/identity";
+import { encodePublicBundle } from "@/lib/crypto/identity";
+import { signBytes } from "@/lib/crypto/e2e";
+import { utf8, b64uEncode } from "@/lib/crypto/encoding";
 
 export class RelayTransport implements Transport {
   readonly name = "relay";
@@ -17,8 +21,21 @@ export class RelayTransport implements Transport {
   private running = false;
   private online = false;
   private onStatus: ((online: boolean) => void) | null = null;
+  private readonly selfId: string;
+  private readonly bundle: string;
 
-  constructor(private readonly selfId: string) {}
+  constructor(private readonly identity: Identity) {
+    this.selfId = identity.address;
+    this.bundle = encodePublicBundle(identity.publicKeys);
+  }
+
+  /** Build an authenticated poll URL proving ownership of our address. */
+  private pollUrl(): string {
+    const ts = Date.now().toString();
+    const sig = b64uEncode(signBytes(this.identity, utf8(`hop-poll:${this.selfId}:${ts}`)));
+    const p = new URLSearchParams({ addr: this.selfId, ts, sig, bundle: this.bundle });
+    return `/api/relay?${p.toString()}`;
+  }
 
   onStatusChange(cb: (online: boolean) => void): void {
     this.onStatus = cb;
@@ -46,7 +63,7 @@ export class RelayTransport implements Transport {
     while (this.running) {
       this.abort = new AbortController();
       try {
-        const res = await fetch(`/api/relay?addr=${encodeURIComponent(this.selfId)}`, {
+        const res = await fetch(this.pollUrl(), {
           signal: this.abort.signal,
           cache: "no-store",
         });

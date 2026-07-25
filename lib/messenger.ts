@@ -55,7 +55,7 @@ export class Messenger {
     this.router = new MeshRouter({ selfId: identity.address, defaultTtl: 8 });
     this.localbus = new LocalBusTransport(identity.address);
     this.webrtc = new WebRTCMeshTransport();
-    this.relay = new RelayTransport(identity.address);
+    this.relay = new RelayTransport(identity);
     this.webrtc.onStatusChange(() => this.emit({ type: "peers", count: this.peerCount() }));
     this.relay.onStatusChange((online) => this.emit({ type: "net", online }));
     this.router.addTransport(this.localbus);

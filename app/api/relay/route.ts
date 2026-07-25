@@ -1,26 +1,67 @@
 /**
  * Internet-relay endpoint — store-and-forward for end-to-end-sealed packets.
  *
- *   POST /api/relay   { to, packet }        enqueue an opaque packet for a recipient
- *   GET  /api/relay?addr=HOP-…              long-poll: drain queued packets, else block
- *                                           up to ~20s for the next one (near-instant)
+ *   POST /api/relay   { to, packet }                  enqueue an opaque packet
+ *   GET  /api/relay?addr&ts&sig&bundle                authenticated long-poll drain
  *
- * The relay stores only ciphertext keyed by address. It holds no keys and cannot read
- * message content — confidentiality/authenticity come entirely from the Double Ratchet.
+ * Security:
+ *   - The relay stores only ciphertext keyed by address; it holds no keys and cannot
+ *     read message content (confidentiality/authenticity come from the Double Ratchet).
+ *   - Draining an inbox requires proving ownership of the address: the caller signs
+ *     `hop-poll:{addr}:{ts}` with the identity key whose public bundle hashes to that
+ *     address. This stops anyone from reading/deleting another user's queued packets.
+ *   - Both verbs are rate-limited to blunt spam and DoS.
  */
 import { NextResponse } from "next/server";
-import { relayConfigured, enqueue, drain, waitNext } from "@/lib/server/redis";
+import { relayConfigured, enqueue, drain, waitNext, rateLimit } from "@/lib/server/redis";
+import { decodePublicBundle, deriveAddress } from "@/lib/crypto/identity";
+import { verifyBytes } from "@/lib/crypto/e2e";
+import { utf8, b64uDecode } from "@/lib/crypto/encoding";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
 const ADDR = /^HOP-[0-9A-Z-]{4,64}$/;
 const MAX_PACKET = 64 * 1024; // 64 KB per packet
+const CLOCK_SKEW_MS = 60_000;
+
+function clientIp(req: Request): string {
+  return (req.headers.get("x-forwarded-for") ?? "unknown").split(",")[0].trim();
+}
+
+/** Verify the caller owns `addr` by checking a fresh signature over the poll challenge. */
+function verifyOwnership(addr: string, ts: string, sig: string, bundle: string): boolean {
+  const t = Number(ts);
+  if (!Number.isFinite(t) || Math.abs(Date.now() - t) > CLOCK_SKEW_MS) return false;
+  let pub;
+  try {
+    pub = decodePublicBundle(bundle);
+  } catch {
+    return false;
+  }
+  if (deriveAddress(pub) !== addr) return false;
+  try {
+    return verifyBytes(pub.sign, utf8(`hop-poll:${addr}:${ts}`), b64uDecode(sig));
+  } catch {
+    return false;
+  }
+}
 
 export async function GET(req: Request) {
   if (!relayConfigured) return NextResponse.json({ error: "relay_unconfigured" }, { status: 503 });
-  const addr = new URL(req.url).searchParams.get("addr") ?? "";
+  const q = new URL(req.url).searchParams;
+  const addr = q.get("addr") ?? "";
+  const ts = q.get("ts") ?? "";
+  const sig = q.get("sig") ?? "";
+  const bundle = q.get("bundle") ?? "";
+
   if (!ADDR.test(addr)) return NextResponse.json({ error: "bad_addr" }, { status: 400 });
+  if (!verifyOwnership(addr, ts, sig, bundle)) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+  if (!(await rateLimit(`poll:${addr}`, 40, 60))) {
+    return NextResponse.json({ error: "rate_limited" }, { status: 429 });
+  }
 
   try {
     let items = await drain(addr);
@@ -36,6 +77,10 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   if (!relayConfigured) return NextResponse.json({ error: "relay_unconfigured" }, { status: 503 });
+  if (!(await rateLimit(`send:${clientIp(req)}`, 120, 60))) {
+    return NextResponse.json({ error: "rate_limited" }, { status: 429 });
+  }
+
   let body: { to?: string; packet?: string };
   try {
     body = (await req.json()) as { to?: string; packet?: string };

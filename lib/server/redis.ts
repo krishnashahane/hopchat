@@ -69,3 +69,20 @@ export async function waitNext(addr: string, timeoutSec = 20): Promise<string | 
   const res = await command<[string, string] | null>(["BLPOP", inboxKey(addr), timeoutSec]);
   return res ? res[1] : null;
 }
+
+/**
+ * Fixed-window rate limit. Returns true if the caller is within budget.
+ * Fails open (allows) if Redis is unreachable — availability over strictness.
+ */
+export async function rateLimit(bucket: string, limit: number, windowSec: number): Promise<boolean> {
+  try {
+    const key = `hop:rl:${bucket}`;
+    const [count] = await pipeline<number>([
+      ["INCR", key],
+      ["EXPIRE", key, windowSec, "NX"],
+    ]);
+    return count <= limit;
+  } catch {
+    return true;
+  }
+}
