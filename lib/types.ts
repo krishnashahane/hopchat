@@ -23,6 +23,10 @@ export interface ChatMessage {
   status: MessageStatus;
   /** Optional self-destruct timestamp (epoch ms). */
   expiresAt?: number;
+  /** Present when the message carries a file/image transfer. */
+  file?: { name: string; mime: string; size: number };
+  /** Reassembled (in) or original (out) file bytes, stored locally. */
+  blob?: Blob;
 }
 
 /** Wire-format for a relayed mesh packet. Payload is an opaque sealed envelope. */
