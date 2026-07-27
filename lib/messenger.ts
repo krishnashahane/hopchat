@@ -17,10 +17,21 @@ import { WebRTCMeshTransport } from "@/lib/mesh/webrtc";
 import { RelayTransport } from "@/lib/mesh/relay";
 import type { Contact, ChatMessage, MeshPacket } from "@/lib/types";
 import * as db from "@/lib/storage/db";
+import {
+  fileMeta,
+  chunkBytes,
+  encodeChunk,
+  decodeChunk,
+  TransferAssembler,
+  MAX_FILE_SIZE,
+  type FileMeta,
+} from "@/lib/transfer";
 
 type Wire =
   | { t: "msg"; id: string; body: string; ts: number; ex?: number }
-  | { t: "ack"; id: string; status: "delivered" | "read" };
+  | { t: "ack"; id: string; status: "delivered" | "read" }
+  | { t: "fmeta"; meta: FileMeta; ts: number }
+  | { t: "fchunk"; id: string; i: number; data: string };
 
 interface RatchetPacket {
   hs?: HandshakeOffer;
@@ -50,6 +61,7 @@ export class Messenger {
   private readonly listeners = new Set<(e: MessengerEvent) => void>();
   private readonly contacts = new Map<string, Contact>();
   private readonly sessions = new Map<string, Session>();
+  private readonly assemblers = new Map<string, TransferAssembler>();
 
   constructor(private readonly identity: Identity) {
     this.router = new MeshRouter({ selfId: identity.address, defaultTtl: 8 });
@@ -149,6 +161,42 @@ export class Messenger {
     return record;
   }
 
+  /** Encrypt one wire record for a contact and flood it as a mesh packet. */
+  private emitRatchet(session: Session, to: string, wire: Wire): void {
+    const msg = session.ratchet.encrypt(utf8(JSON.stringify(wire)));
+    const packet: RatchetPacket = { msg, hs: session.established ? undefined : session.offer };
+    this.router.send({ id: crypto.randomUUID(), to, kind: "msg", payload: packet });
+  }
+
+  /** Chunk, encrypt, and stream a file/image to a contact over the mesh. */
+  async sendFile(contact: Contact, file: File): Promise<ChatMessage> {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (bytes.length > MAX_FILE_SIZE) throw new Error("File exceeds size limit");
+    const id = crypto.randomUUID();
+    const now = Date.now();
+    const meta = fileMeta(id, file.name, file.type, bytes.length);
+
+    const session = this.senderSession(contact);
+    this.emitRatchet(session, contact.address, { t: "fmeta", meta, ts: now });
+    chunkBytes(bytes).forEach((c, i) =>
+      this.emitRatchet(session, contact.address, { t: "fchunk", id, i, data: encodeChunk(c) }),
+    );
+    await this.persist(session);
+
+    const record: ChatMessage = {
+      id,
+      peer: contact.address,
+      direction: "out",
+      body: file.name,
+      createdAt: now,
+      status: "sent",
+      file: { name: meta.name, mime: meta.mime, size: meta.size },
+      blob: file,
+    };
+    await db.addMessage(record);
+    return record;
+  }
+
   private async resolveSession(from: string, hs?: HandshakeOffer): Promise<Session | null> {
     const existing = this.sessions.get(from);
     if (!hs) return existing ?? null;
@@ -238,6 +286,38 @@ export class Messenger {
         msg.status = wire.status;
         await db.updateMessage(msg);
         this.emit({ type: "status", message: msg });
+      }
+    } else if (wire.t === "fmeta") {
+      this.assemblers.set(`${session.peer}:${wire.meta.id}`, new TransferAssembler(wire.meta));
+    } else if (wire.t === "fchunk") {
+      const key = `${session.peer}:${wire.id}`;
+      const asm = this.assemblers.get(key);
+      if (!asm) return; // chunk arrived before its metadata — sender resends on retry
+      const complete = asm.add(wire.i, decodeChunk(wire.data));
+      if (!complete) return;
+      this.assemblers.delete(key);
+
+      const bytes = asm.assemble();
+      const blob = new Blob([bytes.buffer as ArrayBuffer], { type: asm.meta.mime });
+      const record: ChatMessage = {
+        id: asm.meta.id,
+        peer: session.peer,
+        direction: "in",
+        body: asm.meta.name,
+        createdAt: Date.now(),
+        status: "delivered",
+        file: { name: asm.meta.name, mime: asm.meta.mime, size: asm.meta.size },
+        blob,
+      };
+      await db.addMessage(record);
+      this.emit({ type: "message", message: record });
+
+      const contact = this.contacts.get(session.peer);
+      if (contact) {
+        const ack: Wire = { t: "ack", id: asm.meta.id, status: "delivered" };
+        const ackMsg = session.ratchet.encrypt(utf8(JSON.stringify(ack)));
+        await this.persist(session);
+        this.router.send({ id: crypto.randomUUID(), to: session.peer, kind: "ack", payload: { msg: ackMsg } });
       }
     }
   }
