@@ -44,6 +44,7 @@ interface AppState {
   selectContact: (addr: string) => Promise<void>;
   deselect: () => void;
   send: (body: string, selfDestructMs?: number) => Promise<void>;
+  sendFile: (file: File) => Promise<void>;
   reset: () => Promise<void>;
   myBundle: string | null;
 }
@@ -194,6 +195,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [contacts],
   );
 
+  const sendFile = useCallback(
+    async (file: File) => {
+      const m = messengerRef.current;
+      const addr = activeRef.current;
+      if (!m || !addr) return;
+      const contact = contacts.find((c) => c.address === addr);
+      if (!contact) return;
+      await m.sendFile(contact, file);
+      setMessages(await db.listMessages(addr));
+    },
+    [contacts],
+  );
+
   const reset = useCallback(async () => {
     messengerRef.current?.destroy();
     messengerRef.current = null;
@@ -228,6 +242,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     selectContact,
     deselect,
     send,
+    sendFile,
     reset,
     myBundle,
   };
