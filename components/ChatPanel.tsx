@@ -1,8 +1,52 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "@/lib/hooks/useApp";
 import type { ChatMessage, MessageStatus } from "@/lib/types";
+
+function fmtSize(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function FileAttachment({ m }: { m: ChatMessage }) {
+  const url = useMemo(() => (m.blob ? URL.createObjectURL(m.blob) : null), [m.blob]);
+  useEffect(() => () => {
+    if (url) URL.revokeObjectURL(url);
+  }, [url]);
+  const isImage = m.file?.mime.startsWith("image/");
+
+  if (isImage && url) {
+    return (
+      <a href={url} download={m.file?.name} title={m.file?.name}>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={url}
+          alt={m.file?.name ?? "image"}
+          style={{ maxWidth: "100%", maxHeight: 260, borderRadius: 2, display: "block", border: "1px solid var(--line)" }}
+        />
+      </a>
+    );
+  }
+  return (
+    <a
+      href={url ?? undefined}
+      download={m.file?.name}
+      style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--fg)", textDecoration: "none" }}
+    >
+      <span style={{ fontSize: 20 }}>⛁</span>
+      <span style={{ minWidth: 0 }}>
+        <span style={{ display: "block", color: "var(--accent)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {m.file?.name}
+        </span>
+        <span style={{ fontSize: 10, color: "var(--fg-dim)" }}>
+          {m.file ? fmtSize(m.file.size) : ""} · {url ? "download" : "receiving…"}
+        </span>
+      </span>
+    </a>
+  );
+}
 
 const SELF_DESTRUCT_OPTIONS: { label: string; ms?: number }[] = [
   { label: "off", ms: undefined },
@@ -41,7 +85,7 @@ function Bubble({ m }: { m: ChatMessage }) {
           whiteSpace: "pre-wrap",
         }}
       >
-        <div>{m.body}</div>
+        {m.file ? <FileAttachment m={m} /> : <div>{m.body}</div>}
         <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 4, fontSize: 10, color: "var(--fg-dim)" }}>
           {m.expiresAt && <span title="self-destructs">⧗</span>}
           <span>{new Date(m.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
@@ -53,10 +97,12 @@ function Bubble({ m }: { m: ChatMessage }) {
 }
 
 export function ChatPanel() {
-  const { activeAddr, contacts, messages, send, deselect } = useApp();
+  const { activeAddr, contacts, messages, send, sendFile, deselect } = useApp();
   const [text, setText] = useState("");
   const [destruct, setDestruct] = useState<number>(0);
+  const [fileErr, setFileErr] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   const contact = contacts.find((c) => c.address === activeAddr);
 
   useEffect(() => {
@@ -81,6 +127,18 @@ export function ChatPanel() {
     const ms = SELF_DESTRUCT_OPTIONS[destruct].ms;
     await send(text, ms);
     setText("");
+  };
+
+  const onPickFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-selecting the same file
+    if (!file) return;
+    setFileErr(null);
+    try {
+      await sendFile(file);
+    } catch {
+      setFileErr("File too large (max 8 MB).");
+    }
   };
 
   return (
@@ -135,7 +193,18 @@ export function ChatPanel() {
             </button>
           ))}
         </div>
+        {fileErr && <div style={{ color: "var(--danger)", fontSize: 11, marginBottom: 6 }}>{fileErr}</div>}
         <div className="flex gap-2">
+          <input ref={fileRef} type="file" hidden onChange={onPickFile} />
+          <button
+            className="btn"
+            onClick={() => fileRef.current?.click()}
+            title="send a file or image (encrypted)"
+            aria-label="attach file"
+            style={{ padding: "0 12px" }}
+          >
+            ⎗
+          </button>
           <textarea
             className="input"
             style={{ resize: "none", height: 42, paddingTop: 11 }}
