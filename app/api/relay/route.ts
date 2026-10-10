@@ -1,16 +1,8 @@
 /**
- * Internet-relay endpoint — store-and-forward for end-to-end-sealed packets.
+ * Internet relay for end-to-end-sealed packets.
  *
- *   POST /api/relay   { to, packet }                  enqueue an opaque packet
- *   GET  /api/relay?addr&ts&sig&bundle                authenticated long-poll drain
- *
- * Security:
- *   - The relay stores only ciphertext keyed by address; it holds no keys and cannot
- *     read message content (confidentiality/authenticity come from the Double Ratchet).
- *   - Draining an inbox requires proving ownership of the address: the caller signs
- *     `hop-poll:{addr}:{ts}` with the identity key whose public bundle hashes to that
- *     address. This stops anyone from reading/deleting another user's queued packets.
- *   - Both verbs are rate-limited to blunt spam and DoS.
+ * POST /api/relay accepts a recipient address and opaque packet.
+ * GET /api/relay authenticates the recipient before draining that inbox.
  */
 import { NextResponse } from "next/server";
 import { relayConfigured, enqueue, drain, waitNext, rateLimit } from "@/lib/server/redis";
@@ -22,14 +14,18 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
 const ADDR = /^HOP-[0-9A-Z-]{4,64}$/;
-const MAX_PACKET = 64 * 1024; // 64 KB per packet
+const MAX_PACKET = 64 * 1024;
+// A JSON-escaped string may be several times larger than the decoded packet.
+const MAX_REQUEST_BYTES = MAX_PACKET * 6 + 2_048;
 const CLOCK_SKEW_MS = 60_000;
 
 function clientIp(req: Request): string {
-  return (req.headers.get("x-forwarded-for") ?? "unknown").split(",")[0].trim();
+  // Prefer the deployment platform's normalized client-IP header. Do not trust the
+  // first X-Forwarded-For value, which callers can spoof on some proxy setups.
+  return req.headers.get("x-real-ip")?.trim().slice(0, 128) || "unknown";
 }
 
-/** Verify the caller owns `addr` by checking a fresh signature over the poll challenge. */
+/** Verify ownership of addr using a fresh signature over the polling challenge. */
 function verifyOwnership(addr: string, ts: string, sig: string, bundle: string): boolean {
   const t = Number(ts);
   if (!Number.isFinite(t) || Math.abs(Date.now() - t) > CLOCK_SKEW_MS) return false;
@@ -77,25 +73,34 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   if (!relayConfigured) return NextResponse.json({ error: "relay_unconfigured" }, { status: 503 });
+
+  const contentLength = Number(req.headers.get("content-length") ?? "0");
+  if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BYTES) {
+    return NextResponse.json({ error: "request_too_large" }, { status: 413 });
+  }
+
   if (!(await rateLimit(`send:${clientIp(req)}`, 120, 60))) {
     return NextResponse.json({ error: "rate_limited" }, { status: 429 });
   }
 
-  let body: { to?: string; packet?: string };
+  let body: { to?: unknown; packet?: unknown };
   try {
-    body = (await req.json()) as { to?: string; packet?: string };
+    body = (await req.json()) as { to?: unknown; packet?: unknown };
   } catch {
     return NextResponse.json({ error: "bad_json" }, { status: 400 });
   }
+
   const { to, packet } = body;
-  if (!to || !ADDR.test(to)) return NextResponse.json({ error: "bad_addr" }, { status: 400 });
-  if (!packet || typeof packet !== "string" || packet.length > MAX_PACKET) {
+  if (typeof to !== "string" || !ADDR.test(to)) {
+    return NextResponse.json({ error: "bad_addr" }, { status: 400 });
+  }
+  if (typeof packet !== "string" || packet.length === 0 || packet.length > MAX_PACKET) {
     return NextResponse.json({ error: "bad_packet" }, { status: 400 });
   }
 
   try {
     await enqueue(to, packet);
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true }, { headers: { "cache-control": "no-store" } });
   } catch {
     return NextResponse.json({ error: "relay_error" }, { status: 502 });
   }
