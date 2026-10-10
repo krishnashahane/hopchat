@@ -34,13 +34,28 @@ threats → mitigations → residual-risk shape. Read alongside `SECURITY.md` an
 | T5 | Decrypt later with a quantum computer | AD3 | Hybrid ML-KEM-768 in the handshake KDF; secure unless **both** X25519 and ML-KEM break | ✅ |
 | T6 | Recover past messages after key theft | AD4, AD5 | Per-message forward secrecy; message keys deleted after use | ✅ |
 | T7 | Keep reading after a one-time key compromise | AD5 | Post-compromise security: DH ratchet step re-randomizes the root key | ✅ |
-| T8 | Read secret keys off a stolen device | AD4 | Identity sealed at rest with scrypt(N=2¹⁶)+AES-256-GCM; passphrase never stored | ✅ |
+| T8 | Read secret keys off a stolen device | AD4 | Identity sealed at rest with Argon2id (19 MiB, t=2) + AES-256-GCM, or a non-extractable WebCrypto key; panic wipe (logo ×3) destroys it | ✅ |
 | T9 | Handshake-reset / downgrade | AD2 | Established sessions ignore new offers; deterministic glare tie-break | ✅ |
 | T10 | Exhaust memory via skipped-key flood | AD2 | Skipped keys bounded to 256; oversized skips rejected | ✅ |
 | T11 | Web injection (XSS) exfiltrating keys | AD1 | Strict CSP (`default-src 'self'`, `object-src 'none'`), no third-party origins, no inline script beyond framework, React auto-escaping | ✅ |
 | T12 | Clickjacking / framing | AD1 | `frame-ancestors 'none'`, `X-Frame-Options: DENY` | ✅ |
 | T13 | Traffic-analysis of the social graph | AD1, AD2 | Content protected; `to`/`from` hints are cleartext — **partial** | ⚠️ |
 | T14 | Availability / mesh DoS (flooding) | AD2 | TTL + dedup bound propagation; not eliminated | ⚠️ |
+
+## STRIDE summary
+
+| STRIDE | Where it bites HopChat | Control |
+|---|---|---|
+| **S**poofing | Fake sender / room author; draining someone's relay inbox | Address = hash of key bundle; Double Ratchet session from authenticated handshake; room posts Ed25519-signed; relay drain needs a fresh, single-use signature |
+| **T**ampering | Altered packets on a hop or at the relay | AES-256-GCM everywhere (room AAD = destination); router validates shape, TTL, timestamp |
+| **R**epudiation | — (deniable by design for 1:1; room posts are signed) | Not a goal; no server logs of content |
+| **I**nformation disclosure | Ciphertext at relays, keys on disk, auth in URLs | E2E only; vault sealed with Argon2id or non-extractable WebCrypto key; relay auth in headers, never URLs; SW never caches `/api/*` |
+| **D**enial of service | Mesh flood, relay spam, file-transfer memory | 7-hop cap + dedup + replay window; relay rate limits and size caps; ≤8 pending transfers, chunk size checked |
+| **E**levation of privilege | XSS stealing keys; hostile files | Strict CSP (`connect-src 'self'`, no third-party origins); incoming files that are not raster images are stored as `application/octet-stream` and only downloaded |
+
+Room confidentiality is only as strong as the room password: a room with no password
+is public to anyone who knows its name, and Argon2id slows but cannot stop guessing a
+weak password from captured ciphertext.
 
 ## Residual risk (explicitly out of scope for v1)
 

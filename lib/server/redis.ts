@@ -54,14 +54,44 @@ export async function enqueue(to: string, packet: string): Promise<void> {
   ]);
 }
 
+// Lua runs atomically on Redis; a pipeline does not, so a packet pushed between
+// LRANGE and DEL would be lost.
+const DRAIN = "local v=redis.call('LRANGE',KEYS[1],0,-1) redis.call('DEL',KEYS[1]) return v";
+
 /** Drain all currently-queued packets for an address (atomic read+clear). */
 export async function drain(addr: string): Promise<string[]> {
-  const key = inboxKey(addr);
-  const [items] = await pipeline<string[]>([
-    ["LRANGE", key, 0, -1],
-    ["DEL", key],
+  return (await command<string[] | null>(["EVAL", DRAIN, 1, inboxKey(addr)])) ?? [];
+}
+
+/** Record a one-time token; false if it was already used inside `ttlSec`. */
+export async function claimOnce(token: string, ttlSec: number): Promise<boolean> {
+  return (await command<string | null>(["SET", `hop:once:${token}`, "1", "EX", ttlSec, "NX"])) === "OK";
+}
+
+const ROOM_LOG = 200;
+const ROOM_TTL = 86_400;
+// Assign a sequence number and append in one step so readers never skip a post.
+// ARGV[1] is already a JSON string literal (JSON.stringify of the packet text).
+const ROOM_PUSH = `local s=redis.call('INCR',KEYS[2])
+redis.call('RPUSH',KEYS[1],'{"s":'..s..',"p":'..ARGV[1]..'}')
+redis.call('LTRIM',KEYS[1],-${ROOM_LOG},-1)
+redis.call('EXPIRE',KEYS[1],${ROOM_TTL})
+redis.call('EXPIRE',KEYS[2],${ROOM_TTL * 30})
+return s`;
+
+/** Append a sealed room packet to the room's rolling log. */
+export async function roomPush(room: string, packet: string): Promise<number> {
+  return command<number>(["EVAL", ROOM_PUSH, 2, `hop:room:${room}`, `hop:roomseq:${room}`, JSON.stringify(packet)]);
+}
+
+/** Packets with sequence > `after`, plus the current head sequence. */
+export async function roomRead(room: string, after: number): Promise<{ head: number; packets: { s: number; p: string }[] }> {
+  const [items, head] = await pipeline<unknown>([
+    ["LRANGE", `hop:room:${room}`, 0, -1],
+    ["GET", `hop:roomseq:${room}`],
   ]);
-  return items ?? [];
+  const all = ((items as string[] | null) ?? []).map((raw) => JSON.parse(raw) as { s: number; p: string });
+  return { head: Number(head ?? 0), packets: all.filter((x) => x.s > after) };
 }
 
 /** Block up to `timeoutSec` for the next packet (near-instant delivery, few requests). */

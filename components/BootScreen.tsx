@@ -9,12 +9,13 @@ const BOOT_LINES = [
   "loading ml-kem-768 (fips-203) ....... ok",
   "initializing aes-256-gcm ............ ok",
   "mounting local vault (indexeddb) .... ok",
-  "opening mesh router :: ttl=8 ........ ok",
-  "no phone. no email. no servers.",
+  "opening mesh router :: max 7 hops ... ok",
+  "no phone. no email. no account.",
 ];
 
 export function BootScreen() {
-  const { phase, createIdentity, unlock, error } = useApp();
+  const { phase, createIdentity, unlock, reset, error } = useApp();
+  const [confirmWipe, setConfirmWipe] = useState(false);
   const [shown, setShown] = useState(0);
   const [passphrase, setPassphrase] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -34,7 +35,11 @@ export function BootScreen() {
   const onCreate = async () => {
     if (usePass && passphrase !== confirm) return;
     setBusy(true);
-    await createIdentity(usePass ? passphrase : undefined);
+    try {
+      await createIdentity(usePass ? passphrase : undefined);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const onUnlock = async () => {
@@ -126,6 +131,13 @@ export function BootScreen() {
             {error && <div style={{ color: "var(--danger)", fontSize: 11, marginBottom: 8 }}>{error}</div>}
             <button className="btn btn-primary w-full" disabled={busy || !passphrase} onClick={onUnlock}>
               {busy ? "unlocking…" : "unlock"}
+            </button>
+            <button
+              className="btn w-full mt-2"
+              style={{ color: "var(--danger)", borderColor: confirmWipe ? "var(--danger)" : "var(--line-bright)" }}
+              onClick={() => (confirmWipe ? void reset() : setConfirmWipe(true))}
+            >
+              {confirmWipe ? "confirm: erase this identity and start over" : "forgot passphrase? start over"}
             </button>
           </div>
         )}

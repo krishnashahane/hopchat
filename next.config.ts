@@ -12,8 +12,8 @@ const ContentSecurityPolicy = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:",
   "font-src 'self' data:",
-  // WebRTC + local mesh only; no remote fetch endpoints.
-  "connect-src 'self' ws: wss:",
+  // Same-origin relay only. WebRTC data channels are not governed by connect-src.
+  "connect-src 'self'",
   "media-src 'self' blob:",
   "worker-src 'self' blob:",
   "frame-ancestors 'none'",

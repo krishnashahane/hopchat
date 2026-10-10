@@ -21,6 +21,20 @@ Direct transports planned. Relays only ever see opaque ciphertext.
 - **Forward secret** — every message uses a fresh ephemeral key.
 - **Zero-trust transport** — relays cannot read, forge, or attribute messages; every envelope is signed (Ed25519) and AEAD-sealed (AES-256-GCM).
 
+## Features
+
+- **No registration** — no email, phone or account. Your identity is a keypair made on your device.
+- **Multi-hop mesh** — packets are relayed peer-to-peer up to **7 hops**, deduplicated and replay-checked.
+- **End-to-end encryption** — 1:1 chats use a post-quantum handshake + Double Ratchet; relays only see ciphertext.
+- **IRC-style commands** — `/join #room [password]`, `/leave`, `/msg`, `/nick`, `/who`, `/clear`, `/panic`, `/help`.
+- **Password-protected rooms** — room key = Argon2id(password, name); posts are signed by their author.
+- **Panic mode** — tap the HOPCHAT logo 3 times to wipe keys, contacts, messages and caches instantly.
+- **Works when the internet doesn't** — same-device and direct WebRTC links need no server; the optional
+  internet relay bridges distant peers and can be switched off.
+
+Bluetooth LE mesh (30–100 m, no network at all) needs native radio access that browsers don't expose; it
+lives in the native iOS/macOS client in [`hopchat-native/`](./hopchat-native), which is wire-compatible with bitchat.
+
 ## Cryptography
 
 | Purpose | Primitive |
@@ -30,7 +44,7 @@ Direct transports planned. Relays only ever see opaque ciphertext.
 | Post-quantum KEM | ML-KEM-768 (FIPS 203) |
 | Key derivation | HKDF-SHA-256 |
 | Authenticated encryption | AES-256-GCM |
-| At-rest vault | scrypt (N=2¹⁶) → AES-256-GCM |
+| At-rest vault | Argon2id → AES-256-GCM, or a non-extractable WebCrypto key |
 | Address | Crockford-Base32 fingerprint of the public key bundle |
 
 Per message the sender derives `HKDF(X25519(eph, recipient) ‖ ML-KEM.encaps(recipient))`,
@@ -45,7 +59,8 @@ uniform interface:
 
 - **WebRTC** — direct P2P links, serverless invite-code (offer/answer) handshake.
 - **Local bus** — instant same-origin/same-device mesh via `BroadcastChannel`.
-- *(roadmap)* Bluetooth LE, Wi-Fi Direct, Wi-Fi Aware, internet relay.
+- **Internet relay** — store-and-forward of sealed packets (Upstash Redis); user can switch it off.
+- *(native client)* Bluetooth LE. *(roadmap)* Wi-Fi Direct, Wi-Fi Aware.
 
 Because payloads are end-to-end sealed, any peer can relay without learning content.
 

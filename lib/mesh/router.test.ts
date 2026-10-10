@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { MeshRouter, type Transport } from "./router";
+import { MeshRouter, MAX_HOPS, type Transport } from "./router";
 import type { MeshPacket } from "@/lib/types";
 
 function mockTransport(name: string) {
@@ -98,6 +98,40 @@ describe("MeshRouter", () => {
     r.addTransport(b.t);
     r.send({ id: "x1", to: "DST", kind: "msg", payload: { hello: 1 } });
     expect(a.broadcast).toHaveBeenCalledOnce();
+    expect(b.broadcast).toHaveBeenCalledOnce();
+  });
+
+  it("caps relayed hops at MAX_HOPS", () => {
+    const r = new MeshRouter({ selfId: "ME" });
+    const a = mockTransport("a");
+    const b = mockTransport("b");
+    r.addTransport(a.t);
+    r.addTransport(b.t);
+    a.inject(pkt({ to: "OTHER", ttl: 30 }));
+    expect(b.broadcast.mock.calls[0][0].ttl).toBe(MAX_HOPS - 1);
+  });
+
+  it("rejects packets with a non-numeric timestamp", () => {
+    const r = new MeshRouter({ selfId: "ME" });
+    const deliver = vi.fn();
+    r.onDeliver(deliver);
+    const a = mockTransport("a");
+    r.addTransport(a.t);
+    a.inject({ ...pkt({ to: "ME" }), ts: undefined as unknown as number });
+    expect(deliver).not.toHaveBeenCalled();
+  });
+
+  it("delivers and keeps relaying subscribed room packets", () => {
+    const r = new MeshRouter({ selfId: "ME" });
+    const deliver = vi.fn();
+    r.onDeliver(deliver);
+    r.subscribe("ROOM-x");
+    const a = mockTransport("a");
+    const b = mockTransport("b");
+    r.addTransport(a.t);
+    r.addTransport(b.t);
+    a.inject(pkt({ to: "ROOM-x", ttl: 3 }));
+    expect(deliver).toHaveBeenCalledOnce();
     expect(b.broadcast).toHaveBeenCalledOnce();
   });
 });

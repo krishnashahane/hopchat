@@ -12,6 +12,9 @@
  */
 import type { MeshPacket } from "@/lib/types";
 
+/** Hop budget: a packet crosses at most this many links (bitchat-compatible). */
+export const MAX_HOPS = 7;
+
 export interface Transport {
   readonly name: string;
   /** Register a handler for packets arriving on this transport. */
@@ -55,13 +58,15 @@ export class MeshRouter {
   private readonly transports: Transport[] = [];
   private readonly seen = new SeenSet();
   private deliver: ((p: MeshPacket) => void) | null = null;
+  /** Group destinations (rooms) we are subscribed to; delivered *and* relayed. */
+  private readonly groups = new Set<string>();
   private readonly selfId: string;
   private readonly defaultTtl: number;
   private readonly maxAgeMs: number;
 
   constructor(opts: RouterOptions) {
     this.selfId = opts.selfId;
-    this.defaultTtl = opts.defaultTtl ?? 8;
+    this.defaultTtl = Math.min(opts.defaultTtl ?? MAX_HOPS, MAX_HOPS);
     this.maxAgeMs = opts.maxAgeMs ?? 5 * 60_000;
   }
 
@@ -75,12 +80,20 @@ export class MeshRouter {
     this.deliver = cb;
   }
 
+  subscribe(group: string): void {
+    this.groups.add(group);
+  }
+
+  unsubscribe(group: string): void {
+    this.groups.delete(group);
+  }
+
   /** Originate a new packet into the mesh. */
   send(partial: Omit<MeshPacket, "ttl" | "ts" | "from"> & { ttl?: number }): MeshPacket {
     const packet: MeshPacket = {
       ...partial,
       from: this.selfId,
-      ttl: partial.ttl ?? this.defaultTtl,
+      ttl: Math.min(partial.ttl ?? this.defaultTtl, MAX_HOPS),
       ts: Date.now(),
     };
     this.seen.add(packet.id);
@@ -98,17 +111,22 @@ export class MeshRouter {
       this.deliver?.(packet);
       return true;
     }
+    // Room traffic: deliver locally, then keep flooding for other members.
+    if (this.groups.has(packet.to)) this.deliver?.(packet);
 
     // Relay: decrement TTL and re-flood to every transport except the source.
     if (packet.ttl > 1) {
-      this.flood({ ...packet, ttl: packet.ttl - 1 }, via);
+      this.flood({ ...packet, ttl: Math.min(packet.ttl, MAX_HOPS) - 1 }, via);
     }
     return true;
   }
 
   private isValid(packet: MeshPacket): boolean {
-    if (!packet || typeof packet.id !== "string") return false;
-    if (typeof packet.ttl !== "number" || packet.ttl <= 0 || packet.ttl > 32) return false;
+    if (!packet || typeof packet !== "object") return false;
+    if (typeof packet.id !== "string" || packet.id.length === 0 || packet.id.length > 64) return false;
+    if (typeof packet.to !== "string" || typeof packet.from !== "string") return false;
+    if (!Number.isInteger(packet.ttl) || packet.ttl <= 0 || packet.ttl > 32) return false;
+    if (!Number.isFinite(packet.ts)) return false;
     const age = Date.now() - packet.ts;
     if (age > this.maxAgeMs || age < -this.maxAgeMs) return false;
     return true;

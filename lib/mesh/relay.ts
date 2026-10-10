@@ -24,18 +24,63 @@ export class RelayTransport implements Transport {
   private onStatus: ((online: boolean) => void) | null = null;
   private readonly selfId: string;
   private readonly bundle: string;
+  /** Joined rooms → last seen log sequence. */
+  private readonly rooms = new Map<string, number>();
+  private roomTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Bumped whenever the room loop restarts so a stale in-flight loop exits. */
+  private roomGen = 0;
+  private roomLoopActive = false;
 
   constructor(private readonly identity: Identity) {
     this.selfId = identity.address;
     this.bundle = encodePublicBundle(identity.publicKeys);
   }
 
-  /** Build an authenticated poll URL proving ownership of our address. */
-  private pollUrl(): string {
+  /** Signed, single-use headers proving ownership of our address (kept out of URLs/logs). */
+  private pollHeaders(): Record<string, string> {
     const ts = Date.now().toString();
     const sig = b64uEncode(signBytes(this.identity, utf8(`hop-poll:${this.selfId}:${ts}`)));
-    const p = new URLSearchParams({ addr: this.selfId, ts, sig, bundle: this.bundle });
-    return `/api/relay?${p.toString()}`;
+    return { "x-hop-addr": this.selfId, "x-hop-ts": ts, "x-hop-sig": sig, "x-hop-bundle": this.bundle };
+  }
+
+  /** Follow these rooms' relay logs (in addition to our private inbox). */
+  setRooms(dests: string[]): void {
+    for (const d of [...this.rooms.keys()]) if (!dests.includes(d)) this.rooms.delete(d);
+    for (const d of dests) if (!this.rooms.has(d)) this.rooms.set(d, 0);
+    if (this.running && !this.roomLoopActive) this.startRooms();
+  }
+
+  private startRooms(): void {
+    if (this.rooms.size === 0) return;
+    this.roomLoopActive = true;
+    void this.pollRooms(++this.roomGen);
+  }
+
+  private async pollRooms(gen: number): Promise<void> {
+    this.roomTimer = null;
+    for (const [dest, after] of [...this.rooms]) {
+      if (gen !== this.roomGen || !this.running) return;
+      try {
+        const res = await fetch(`/api/relay?room=${dest}&after=${after}`, { cache: "no-store" });
+        if (!res.ok) continue;
+        const { head, packets } = (await res.json()) as { head: number; packets: { s: number; p: string }[] };
+        if (!this.rooms.has(dest)) continue;
+        // Log expired and restarted: rewind so new posts are not skipped.
+        this.rooms.set(dest, head < after ? 0 : Math.max(after, ...packets.map((x) => x.s)));
+        for (const { p } of packets) {
+          try {
+            this.handler?.(JSON.parse(p) as MeshPacket, this.name);
+          } catch {
+            /* skip malformed */
+          }
+        }
+      } catch {
+        /* offline — retry next tick */
+      }
+    }
+    if (gen !== this.roomGen) return;
+    if (this.running && this.rooms.size > 0) this.roomTimer = setTimeout(() => void this.pollRooms(gen), 3_000);
+    else this.roomLoopActive = false;
   }
 
   onStatusChange(cb: (online: boolean) => void): void {
@@ -51,6 +96,7 @@ export class RelayTransport implements Transport {
     if (this.running || !this.enabled || typeof window === "undefined") return;
     this.running = true;
     void this.loop();
+    this.startRooms();
   }
 
   /** User-facing toggle: enable/disable the internet relay transport at runtime. */
@@ -75,7 +121,8 @@ export class RelayTransport implements Transport {
     while (this.running) {
       this.abort = new AbortController();
       try {
-        const res = await fetch(this.pollUrl(), {
+        const res = await fetch("/api/relay", {
+          headers: this.pollHeaders(),
           signal: this.abort.signal,
           cache: "no-store",
         });
@@ -112,8 +159,9 @@ export class RelayTransport implements Transport {
     void fetch("/api/relay", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      // No `keepalive`: browsers cap in-flight keepalive bodies at 64 KB total,
+      // which silently dropped file chunks.
       body: JSON.stringify({ to: packet.to, packet: JSON.stringify(packet) }),
-      keepalive: true,
     }).catch(() => {
       /* delivery retried by the app/mesh; never throw into the router */
     });
@@ -131,6 +179,10 @@ export class RelayTransport implements Transport {
   close(): void {
     this.running = false;
     this.abort?.abort();
+    if (this.roomTimer) clearTimeout(this.roomTimer);
+    this.roomTimer = null;
+    this.roomGen++;
+    this.roomLoopActive = false;
     this.setOnline(false);
   }
 }

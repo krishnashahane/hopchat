@@ -27,6 +27,8 @@ export interface ChatMessage {
   file?: { name: string; mime: string; size: number };
   /** Reassembled (in) or original (out) file bytes, stored locally. */
   blob?: Blob;
+  /** Room messages: sender nickname + address (verified by signature). */
+  author?: { nick: string; address: string };
 }
 
 /** Wire-format for a relayed mesh packet. Payload is an opaque sealed envelope. */
@@ -41,7 +43,7 @@ export interface MeshPacket {
   ttl: number;
   /** Monotonic-ish timestamp for ordering + replay windows. */
   ts: number;
-  kind: "msg" | "ack" | "presence";
+  kind: "msg" | "ack" | "presence" | "room";
   /** Opaque, end-to-end encrypted payload (SealedEnvelope JSON). */
   payload: unknown;
 }

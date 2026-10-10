@@ -30,7 +30,8 @@ public issue for undisclosed vulnerabilities. We aim to acknowledge within 72 ho
 | Key agreement | X25519 (ephemeral) **+** ML-KEM-768 (FIPS 203), combined in the KDF |
 | Forward secrecy | fresh ephemeral X25519 key per message |
 | Identity binding | AEAD AAD binds sender + recipient signing keys |
-| At-rest | scrypt(N=2¹⁶, r=8, p=1) → AES-256-GCM vault |
+| At-rest | Argon2id (m=19 MiB, t=2, p=1) → AES-256-GCM, or a non-extractable WebCrypto device key; legacy scrypt vaults are re-sealed on unlock |
+| Rooms | Argon2id(password, H(name)) → AES-256-GCM; posts Ed25519-signed |
 
 Primitives come from the audited [`@noble`](https://paulmillr.com/noble/) libraries.
 Keys are generated with the platform CSPRNG (`crypto.getRandomValues`) and never
@@ -44,8 +45,34 @@ leave the device.
   `Referrer-Policy: no-referrer`, restrictive `Permissions-Policy`, `powered-by` removed.
 - No analytics, telemetry, cookies, or third-party network calls.
 
+## Panic mode
+
+Tap the HOPCHAT logo three times (or type `/panic`). The app deletes the IndexedDB
+database (keys, contacts, messages, rooms), localStorage, Cache Storage and the
+service worker, then reloads empty. There is no confirmation by design.
+
 ## Supply chain
 
 - Dependencies are pinned and `npm audit` is kept at **0 known vulnerabilities**
   (transitive `postcss`/`sharp` advisories are patched via `overrides`).
-- CI should run `npm audit`, `npm run typecheck`, and `npm test` on every change.
+- CI runs gitleaks (secrets), type check, tests, build and `npm audit` on every push and PR;
+  CodeQL (`security-extended`) runs on every push and weekly; Dependabot opens weekly
+  dependency and Actions updates.
+- Secrets (Upstash Redis token) live only in Vercel environment variables, never in git.
+
+## Incident response
+
+1. **Triage (≤24h):** reproduce, rate severity (CVSS), open a private GitHub advisory.
+2. **Contain:** if the relay is implicated, disable it (`vercel env rm KV_REST_API_URL` →
+   redeploy). Clients fall back to local mesh; no message content is at risk on the relay.
+3. **Fix:** patch on a private branch, add a regression test, ship with `vercel --prod`.
+   Critical fixes target 72h; bump the service-worker `VERSION` so clients refresh.
+4. **Rotate:** rotate the Upstash token in the Vercel dashboard if it may have leaked.
+5. **Disclose:** publish the advisory and credit the reporter.
+
+## Not covered by this codebase
+
+- **TLS 1.3:** terminated by Vercel's edge (TLS 1.2/1.3); HSTS preload is sent.
+- **Passwords + MFA:** HopChat has no accounts, so there is nothing to log in to. The
+  local passphrase uses Argon2id. Enable MFA on the GitHub, Vercel and GoDaddy accounts.
+- **Pen test / bug bounty:** not yet commissioned. Reports via the process above are welcome.

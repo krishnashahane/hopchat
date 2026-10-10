@@ -11,12 +11,15 @@ import { decodePublicBundle, deriveAddress, fingerprintHex, encodePublicBundle }
 import { initiateHandshake, respondHandshake, type HandshakeOffer } from "@/lib/crypto/handshake";
 import { DoubleRatchet, type RatchetMessage } from "@/lib/crypto/ratchet";
 import { utf8, fromUtf8 } from "@/lib/crypto/encoding";
-import { MeshRouter } from "@/lib/mesh/router";
+import { MeshRouter, MAX_HOPS } from "@/lib/mesh/router";
+import { sealPost, openPost, MAX_ROOM_BODY, type SealedPost } from "@/lib/crypto/room";
+import { b64uDecode } from "@/lib/crypto/encoding";
 import { LocalBusTransport } from "@/lib/mesh/localbus";
 import { WebRTCMeshTransport } from "@/lib/mesh/webrtc";
 import { RelayTransport } from "@/lib/mesh/relay";
 import type { Contact, ChatMessage, MeshPacket } from "@/lib/types";
 import * as db from "@/lib/storage/db";
+import type { StoredRoom } from "@/lib/storage/db";
 import {
   fileMeta,
   chunkBytes,
@@ -26,6 +29,15 @@ import {
   MAX_FILE_SIZE,
   type FileMeta,
 } from "@/lib/transfer";
+
+/** Incoming files keep their type only if it is a raster image; all else downloads as bytes. */
+const SAFE_IMAGE = /^image\/(png|jpeg|gif|webp|avif|bmp)$/;
+const MAX_PENDING_TRANSFERS = 8;
+
+interface JoinedRoom {
+  name: string;
+  key: Uint8Array;
+}
 
 type Wire =
   | { t: "msg"; id: string; body: string; ts: number; ex?: number }
@@ -51,7 +63,8 @@ export type MessengerEvent =
   | { type: "status"; message: ChatMessage }
   | { type: "contact"; contact: Contact }
   | { type: "peers"; count: number }
-  | { type: "net"; online: boolean };
+  | { type: "net"; online: boolean }
+  | { type: "room"; message: ChatMessage };
 
 export class Messenger {
   private readonly router: MeshRouter;
@@ -62,9 +75,10 @@ export class Messenger {
   private readonly contacts = new Map<string, Contact>();
   private readonly sessions = new Map<string, Session>();
   private readonly assemblers = new Map<string, TransferAssembler>();
+  private readonly rooms = new Map<string, JoinedRoom>();
 
   constructor(private readonly identity: Identity) {
-    this.router = new MeshRouter({ selfId: identity.address, defaultTtl: 8 });
+    this.router = new MeshRouter({ selfId: identity.address, defaultTtl: MAX_HOPS });
     this.localbus = new LocalBusTransport(identity.address);
     this.webrtc = new WebRTCMeshTransport();
     this.relay = new RelayTransport(identity);
@@ -115,6 +129,63 @@ export class Messenger {
 
   registerContact(c: Contact): void {
     this.contacts.set(c.address, c);
+  }
+
+  joinRoom(r: StoredRoom): void {
+    this.rooms.set(r.dest, { name: r.name, key: b64uDecode(r.key) });
+    this.router.subscribe(r.dest);
+    this.relay.setRooms([...this.rooms.keys()]);
+  }
+
+  leaveRoom(dest: string): void {
+    this.rooms.delete(dest);
+    this.router.unsubscribe(dest);
+    this.relay.setRooms([...this.rooms.keys()]);
+  }
+
+  /** Seal, sign, and flood a post to everyone in a room. */
+  async sendRoom(dest: string, nick: string, body: string): Promise<ChatMessage> {
+    const room = this.rooms.get(dest);
+    if (!room) throw new Error("Not in that room");
+    if (body.length > MAX_ROOM_BODY) throw new Error("Message too long");
+    const id = crypto.randomUUID();
+    const ts = Date.now();
+    const sealed = sealPost(this.identity, room.key, dest, { id, ts, nick, body });
+    const record: ChatMessage = {
+      id,
+      peer: room.name,
+      direction: "out",
+      body,
+      createdAt: ts,
+      status: "sent",
+      author: { nick, address: this.identity.address },
+    };
+    await db.addMessage(record);
+    this.router.send({ id, to: dest, kind: "room", payload: sealed });
+    return record;
+  }
+
+  private async handleRoom(packet: MeshPacket): Promise<void> {
+    const room = this.rooms.get(packet.to);
+    if (!room) return;
+    let post;
+    try {
+      post = openPost(room.key, packet.to, packet.payload as SealedPost);
+    } catch {
+      return; // wrong password, tampered, or forged — drop silently.
+    }
+    if (post.address === this.identity.address) return; // our own post echoed back
+    const record: ChatMessage = {
+      id: post.id,
+      peer: room.name,
+      direction: "in",
+      body: post.body,
+      createdAt: post.ts,
+      status: "delivered",
+      author: { nick: post.nick, address: post.address },
+    };
+    await db.addMessage(record);
+    this.emit({ type: "room", message: record });
   }
 
   private async persist(s: Session): Promise<void> {
@@ -209,6 +280,7 @@ export class Messenger {
 
     const peerBundle = decodePublicBundle(hs.ik);
     const peerAddr = deriveAddress(peerBundle);
+    if (peerAddr !== from) return null; // routing hint must match the handshake identity
     const sk = respondHandshake(this.identity, peerBundle, hs);
     const session: Session = {
       peer: peerAddr,
@@ -238,6 +310,7 @@ export class Messenger {
   }
 
   private async handleDeliver(packet: MeshPacket): Promise<void> {
+    if (packet.kind === "room") return this.handleRoom(packet);
     const payload = packet.payload as RatchetPacket;
     if (!payload || typeof payload !== "object" || !payload.msg) return;
 
@@ -288,12 +361,26 @@ export class Messenger {
         this.emit({ type: "status", message: msg });
       }
     } else if (wire.t === "fmeta") {
-      this.assemblers.set(`${session.peer}:${wire.meta.id}`, new TransferAssembler(wire.meta));
+      const m = wire.meta;
+      const valid =
+        typeof m?.id === "string" &&
+        Number.isInteger(m.size) && m.size >= 0 && m.size <= MAX_FILE_SIZE &&
+        Number.isInteger(m.chunkSize) && m.chunkSize > 0 &&
+        m.chunks === Math.max(1, Math.ceil(m.size / m.chunkSize));
+      if (!valid || this.assemblers.size >= MAX_PENDING_TRANSFERS) return;
+      const meta: FileMeta = {
+        ...m,
+        name: String(m.name).replace(/[\/\\\u0000-\u001f]/g, "_").slice(0, 120) || "file",
+        mime: SAFE_IMAGE.test(m.mime) ? m.mime : "application/octet-stream",
+      };
+      this.assemblers.set(`${session.peer}:${meta.id}`, new TransferAssembler(meta));
     } else if (wire.t === "fchunk") {
       const key = `${session.peer}:${wire.id}`;
       const asm = this.assemblers.get(key);
       if (!asm) return; // chunk arrived before its metadata — sender resends on retry
-      const complete = asm.add(wire.i, decodeChunk(wire.data));
+      const chunk = decodeChunk(wire.data);
+      if (chunk.length > asm.meta.chunkSize) return;
+      const complete = asm.add(wire.i, chunk);
       if (!complete) return;
       this.assemblers.delete(key);
 

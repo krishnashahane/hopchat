@@ -2,3 +2,9 @@ node_modules
 .next
 .vercel
 *.log
+.env*
+.agents
+.claude
+skills-lock.json
+hopchat-native
+mobile

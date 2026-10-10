@@ -36,13 +36,32 @@ interface HopDB extends DBSchema {
     key: string;
     value: StoredSession;
   };
+  keys: {
+    key: string;
+    value: { id: string; key: CryptoKey };
+  };
+  rooms: {
+    key: string;
+    value: StoredRoom;
+  };
+}
+
+export interface StoredRoom {
+  /** Display name, e.g. "#general". */
+  name: string;
+  /** Mesh destination derived from the room key ("ROOM-…"). */
+  dest: string;
+  /** Raw AES-256 room key (Argon2id of name + optional password). */
+  key: string;
+  locked: boolean;
+  joinedAt: number;
 }
 
 let dbPromise: Promise<IDBPDatabase<HopDB>> | null = null;
 
 function getDB(): Promise<IDBPDatabase<HopDB>> {
   if (!dbPromise) {
-    dbPromise = openDB<HopDB>("hopchat", 2, {
+    dbPromise = openDB<HopDB>("hopchat", 3, {
       upgrade(db, oldVersion) {
         if (oldVersion < 1) {
           db.createObjectStore("identity", { keyPath: "id" });
@@ -54,6 +73,10 @@ function getDB(): Promise<IDBPDatabase<HopDB>> {
         }
         if (oldVersion < 2) {
           db.createObjectStore("sessions", { keyPath: "peer" });
+        }
+        if (oldVersion < 3) {
+          db.createObjectStore("keys", { keyPath: "id" });
+          db.createObjectStore("rooms", { keyPath: "name" });
         }
       },
     });
@@ -84,7 +107,52 @@ export async function clearAll(): Promise<void> {
     db.clear("contacts"),
     db.clear("messages"),
     db.clear("sessions"),
+    db.clear("keys"),
+    db.clear("rooms"),
   ]);
+}
+
+/** Panic wipe: drop the whole database, not just its rows. */
+export async function destroy(): Promise<void> {
+  if (dbPromise) (await dbPromise).close();
+  dbPromise = null;
+  await new Promise<void>((resolve) => {
+    const req = indexedDB.deleteDatabase("hopchat");
+    req.onsuccess = req.onerror = req.onblocked = () => resolve();
+  });
+}
+
+/** Non-extractable AES-GCM key that seals the identity when no passphrase is set. */
+export async function deviceKey(): Promise<CryptoKey> {
+  const db = await getDB();
+  const found = await db.get("keys", "device");
+  if (found) return found.key;
+  const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+  await db.put("keys", { id: "device", key });
+  return key;
+}
+
+export async function listRooms(): Promise<StoredRoom[]> {
+  const db = await getDB();
+  return (await db.getAll("rooms")).sort((a, b) => a.joinedAt - b.joinedAt);
+}
+
+export async function saveRoom(r: StoredRoom): Promise<void> {
+  const db = await getDB();
+  await db.put("rooms", r);
+}
+
+export async function deleteRoom(name: string): Promise<void> {
+  const db = await getDB();
+  await db.delete("rooms", name);
+}
+
+/** Delete every stored message for one conversation (contact address or room name). */
+export async function clearMessages(peer: string): Promise<void> {
+  const db = await getDB();
+  const tx = db.transaction("messages", "readwrite");
+  for (const key of await tx.store.index("byPeer").getAllKeys(peer)) await tx.store.delete(key);
+  await tx.done;
 }
 
 export async function saveSession(s: StoredSession): Promise<void> {

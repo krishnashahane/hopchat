@@ -5,3 +5,9 @@ node_modules/
 *.log
 .DS_Store
 .vercel
+.env*
+!.env.example
+tsconfig.tsbuildinfo
+.agents/
+.claude/skills/
+skills-lock.json
