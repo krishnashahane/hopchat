@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@noble/ciphers": "^1.2.1",
-    "@noble/curves": "^1.8.1",
+    "@noble/curves": "^2.4.0",
     "@noble/hashes": "^1.7.1",
     "@noble/post-quantum": "^0.4.1",
     "idb": "^8.0.2",
