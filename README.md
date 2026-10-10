@@ -1,84 +1,96 @@
 # HopChat
 
-**Decentralized, offline-first, end-to-end encrypted mesh messaging.**
-No phone number. No email. No account. No server that can read your messages.
+**Offline-first, peer-to-peer messaging with end-to-end encryption.**
 
-HopChat is a peer-to-peer messenger. Your identity is a set of cryptographic keys
-generated on your device. Messages are sealed end-to-end with a **hybrid
-post-quantum** scheme and hop across a self-healing mesh of nearby peers — over
-WebRTC data channels and same-device broadcast today, with Bluetooth LE / Wi-Fi
-Direct transports planned. Relays only ever see opaque ciphertext.
+HopChat is an experimental messenger built around device-generated cryptographic identities. The web client supports encrypted messaging over a local same-origin bus and WebRTC peer connections. An optional internet relay can queue encrypted packets for offline recipients; it cannot decrypt their contents.
 
-> Live: **https://hopchat.in**
+Live web app: https://hopchat.in
 
----
+> **Security notice:** HopChat has not undergone an independent security audit. Do not rely on it for high-risk communications. Review [SECURITY.md](./SECURITY.md) and [THREATMODEL.md](./THREATMODEL.md) before using it for sensitive data. Local chat history and ratchet session state are currently stored in browser IndexedDB; do not assume that all local data is encrypted at rest.
 
-## Why HopChat
+## Features
 
-- **Offline-first** — the mesh routes messages peer-to-peer; no central server is required to deliver a message.
-- **Privacy-first** — no identifiers, no tracking, no ads. History is local-first (IndexedDB), never uploaded.
-- **Post-quantum secure** — X25519 **+ ML-KEM-768** (NIST FIPS 203) hybrid key agreement, so messages stay confidential even against future quantum adversaries.
-- **Forward secret** — every message uses a fresh ephemeral key.
-- **Zero-trust transport** — relays cannot read, forge, or attribute messages; every envelope is signed (Ed25519) and AEAD-sealed (AES-256-GCM).
+- Device-generated identities without a phone number, email address, or account.
+- End-to-end message encryption using Ed25519 signatures, X25519, ML-KEM-768, HKDF-SHA-256, and AES-256-GCM components.
+- A transport-agnostic mesh router with packet deduplication, time checks, TTL limits, and WebRTC transport.
+- Local-first contacts and conversation history in IndexedDB.
+- Optional store-and-forward relay backed by Upstash Redis REST.
+- Separate Swift/Xcode project under `hopchat-native/` for Apple platforms.
 
-## Cryptography
+Bluetooth LE and Wi-Fi Direct are roadmap items, not transports currently provided by the web client. The `mobile/` directory is a minimal Expo starter rather than a complete mobile messaging client.
 
-| Purpose | Primitive |
-|---|---|
-| Identity / signatures | Ed25519 |
-| Classical key agreement | X25519 (ECDH, ephemeral → forward secrecy) |
-| Post-quantum KEM | ML-KEM-768 (FIPS 203) |
-| Key derivation | HKDF-SHA-256 |
-| Authenticated encryption | AES-256-GCM |
-| At-rest vault | scrypt (N=2¹⁶) → AES-256-GCM |
-| Address | Crockford-Base32 fingerprint of the public key bundle |
+## Requirements
 
-Per message the sender derives `HKDF(X25519(eph, recipient) ‖ ML-KEM.encaps(recipient))`,
-AEAD-seals the plaintext (AAD binds both identities), and Ed25519-signs the transcript.
-See [`ARCHITECTURE.md`](./ARCHITECTURE.md) and [`SECURITY.md`](./SECURITY.md).
+- Node.js 22 or newer recommended (Node.js 20+ is declared in `package.json`).
+- npm.
+- For the optional hosted relay: an Upstash Redis REST database.
 
-## Mesh networking
+## Run locally
 
-A transport-agnostic `MeshRouter` performs controlled-flood multi-hop routing with
-per-packet deduplication, TTL, and a replay window. Transports plug in behind a
-uniform interface:
-
-- **WebRTC** — direct P2P links, serverless invite-code (offer/answer) handshake.
-- **Local bus** — instant same-origin/same-device mesh via `BroadcastChannel`.
-- *(roadmap)* Bluetooth LE, Wi-Fi Direct, Wi-Fi Aware, internet relay.
-
-Because payloads are end-to-end sealed, any peer can relay without learning content.
-
-## Develop
+From the repository root:
 
 ```bash
-npm install
-npm run dev        # http://localhost:3000
-npm run build      # production build
-npm test           # crypto + mesh router unit tests
-npm run typecheck  # strict TypeScript
+npm ci
+npm run dev
 ```
+
+Open http://localhost:3000.
+
+Useful checks:
+
+```bash
+npm run typecheck
+npm test
+npm run build
+npm audit --audit-level=high
+```
+
+The web TypeScript configuration intentionally excludes `mobile/`; install and run the Expo project independently from that directory. The Apple client has its own build instructions in [`hopchat-native/README.md`](./hopchat-native/README.md).
+
+## Optional internet relay
+
+Without Redis credentials, the relay API returns `503 relay_unconfigured`; local and direct peer-to-peer features can still be used where their transports are available.
+
+Set **one** supported pair of environment variables in `.env.local` for local development, or in your deployment provider's secret/environment-variable settings:
+
+```dotenv
+KV_REST_API_URL=https://your-database.upstash.io
+KV_REST_API_TOKEN=replace-with-your-secret-token
+```
+
+Alternatively, use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`. Never commit real tokens. Relay packets expire after 24 hours, and each recipient inbox is bounded to 500 queued packets. Requests are rate-limited; the limiter rejects traffic when Redis cannot enforce its limits.
 
 ## Project layout
 
+```text
+app/                  Next.js App Router UI and relay API
+components/           Web interface components
+lib/crypto/           Identity, encryption, vault, and ratchet code
+lib/mesh/             Mesh router and WebRTC/local transports
+lib/server/redis.ts   Upstash relay storage and rate limiting
+lib/storage/          IndexedDB persistence
+lib/messenger.ts      Messaging service
+hopchat-native/       Separate Swift/Xcode Apple client
+mobile/               Minimal Expo starter
 ```
-app/                 Next.js App Router (client-only UI shell)
-components/           Hacker-terminal UI (boot, sidebar, chat, modals)
-lib/crypto/          identity · e2e (hybrid PQC) · vault · encoding
-lib/mesh/            router · webrtc · localbus transports
-lib/storage/         IndexedDB local-first persistence
-lib/messenger.ts     application service (seal → route → open)
-lib/hooks/useApp.tsx React state/context
-```
 
-## Security posture
+## Cryptographic components
 
-- Strict Content-Security-Policy, HSTS, `frame-ancestors 'none'`, `Referrer-Policy: no-referrer`, no telemetry.
-- No secrets in the repo; identity keys never leave the device.
-- Dependencies pinned; `npm audit` clean (0 vulnerabilities).
+| Purpose | Primitive |
+| --- | --- |
+| Signatures and identity | Ed25519 |
+| Classical key agreement | X25519 |
+| Post-quantum KEM | ML-KEM-768 (FIPS 203) |
+| Key derivation | HKDF-SHA-256 |
+| Authenticated encryption | AES-256-GCM |
+| Passphrase-protected identity vault | scrypt + AES-256-GCM |
 
-Report vulnerabilities per [`SECURITY.md`](./SECURITY.md).
+These are the primitives used in the code, not a certification that the overall protocol is secure. JavaScript implementations are subject to runtime and side-channel limitations, and the protocol has not been independently audited. For the current security assumptions and residual risks, see [`SECURITY.md`](./SECURITY.md), [`THREATMODEL.md`](./THREATMODEL.md), [`ARCHITECTURE.md`](./ARCHITECTURE.md), and [`PROTOCOL.md`](./PROTOCOL.md).
+
+## Contributing
+
+Before submitting changes that affect `lib/crypto/`, `lib/mesh/`, or the relay, add focused regression tests and explain any protocol or security implications. CI runs type checking, tests, a production build, and an npm security audit.
 
 ## License
 
-MIT — see [`LICENSE`](./LICENSE).
+MIT. See [`LICENSE`](./LICENSE).
