@@ -15,19 +15,19 @@
     "@noble/ciphers": "^1.2.1",
     "@noble/curves": "^1.8.1",
     "@noble/hashes": "^1.7.1",
-    "@noble/post-quantum": "^0.4.1",
-    "idb": "^8.0.2",
+    "@noble/post-quantum": "^0.7.1",
+    "idb": "^8.0.4",
     "next": "^16.4.0",
     "qrcode": "^1.5.4",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.0.9",
     "@types/node": "^22.13.5",
     "@types/qrcode": "^1.5.5",
-    "@types/react": "^19.0.10",
-    "@types/react-dom": "^19.0.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "tailwindcss": "^4.0.9",
     "typescript": "^5.7.3",
     "vitest": "^5.0.3"
