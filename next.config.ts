@@ -13,6 +13,9 @@ const securityHeaders = [
   { key: "Permissions-Policy", value: "camera=(self), microphone=(self), geolocation=(self), interest-cohort=()" },
   { key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains; preload" },
   { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+  // With COOP same-origin this makes the page cross-origin isolated; every
+  // subresource is same-origin, and WebSockets/WebRTC are unaffected.
+  { key: "Cross-Origin-Embedder-Policy", value: "require-corp" },
   { key: "Cross-Origin-Resource-Policy", value: "same-origin" },
   { key: "X-DNS-Prefetch-Control", value: "off" },
 ];

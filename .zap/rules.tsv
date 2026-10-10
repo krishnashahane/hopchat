@@ -1,2 +1,6 @@
-10049	IGNORE	(Non-storable content: dynamic page by design)
-10015	IGNORE	(Cache-control: app shell handled by service worker)
+10049	IGNORE	(Non-storable content: page is dynamic by design for the per-request CSP nonce)
+10015	IGNORE	(Cache-control: app shell is cached by the service worker, not HTTP caches)
+10050	IGNORE	(Retrieved from cache: immutable hashed static assets served from Vercel's CDN)
+10109	IGNORE	(Modern web application: informational)
+10055	WARN	(Accepted: style-src 'unsafe-inline' needed for React style attributes; scripts are nonce-locked so styles cannot run code)
+10098	WARN	(Accepted: Vercel sends ACAO * on public static assets only; no credentials or private data; CORP same-origin blocks embedding)
