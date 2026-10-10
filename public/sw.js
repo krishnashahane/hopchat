@@ -9,7 +9,7 @@
  * Cross-origin (e.g. STUN) requests and /api/* are never intercepted: relay responses
  * carry live ciphertext and must never be cached or replayed.
  */
-const VERSION = "hopchat-v4";
+const VERSION = "hopchat-v5";
 const SHELL = `${VERSION}-shell`;
 const RUNTIME = `${VERSION}-runtime`;
 const APP_SHELL = ["/", "/manifest.webmanifest", "/icon.svg"];
