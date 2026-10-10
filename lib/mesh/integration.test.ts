@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { MeshRouter } from "./router";
 import { InMemoryBus, InMemoryTransport } from "./memory";
-import { createIdentity } from "@/lib/crypto/identity";
+import { createIdentity, decodePublicBundle } from "@/lib/crypto/identity";
 import { initiateHandshake, respondHandshake, type HandshakeOffer } from "@/lib/crypto/handshake";
 import { DoubleRatchet, type RatchetMessage } from "@/lib/crypto/ratchet";
 import { utf8, fromUtf8 } from "@/lib/crypto/encoding";
@@ -62,7 +62,7 @@ describe("mesh integration: Alice → Relay → Bob (multi-hop, E2E)", () => {
 
     // Bob decrypts successfully.
     const received = m.bobInbox[0].payload as RatchetPacket;
-    const skB = respondHandshake(m.bob, m.alice.publicKeys, received.hs!);
+    const skB = respondHandshake(m.bob, decodePublicBundle(received.hs!.ik), received.hs!);
     const ratchetB = DoubleRatchet.initReceiver(skB, {
       sk: m.bob.secretKeys.kex,
       pk: m.bob.publicKeys.kex,
