@@ -19,6 +19,39 @@ const MAX_PACKET = 64 * 1024;
 const MAX_REQUEST_BYTES = MAX_PACKET * 6 + 2_048;
 const CLOCK_SKEW_MS = 60_000;
 
+class RequestTooLargeError extends Error {}
+
+/** Read at most the configured request size, including when Content-Length is absent. */
+async function readJsonBody(req: Request): Promise<unknown> {
+  if (!req.body) throw new Error("Missing request body");
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_REQUEST_BYTES) {
+        await reader.cancel();
+        throw new RequestTooLargeError();
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+
 function clientIp(req: Request): string {
   // Prefer the deployment platform's normalized client-IP header. Do not trust the
   // first X-Forwarded-For value, which callers can spoof on some proxy setups.
@@ -83,14 +116,20 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "rate_limited" }, { status: 429 });
   }
 
-  let body: { to?: unknown; packet?: unknown };
+  let body: unknown;
   try {
-    body = (await req.json()) as { to?: unknown; packet?: unknown };
-  } catch {
+    body = await readJsonBody(req);
+  } catch (error) {
+    if (error instanceof RequestTooLargeError) {
+      return NextResponse.json({ error: "request_too_large" }, { status: 413 });
+    }
+    return NextResponse.json({ error: "bad_json" }, { status: 400 });
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
     return NextResponse.json({ error: "bad_json" }, { status: 400 });
   }
 
-  const { to, packet } = body;
+  const { to, packet } = body as { to?: unknown; packet?: unknown };
   if (typeof to !== "string" || !ADDR.test(to)) {
     return NextResponse.json({ error: "bad_addr" }, { status: 400 });
   }
