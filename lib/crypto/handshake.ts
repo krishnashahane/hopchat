@@ -10,10 +10,10 @@
  * public key and the KEM ciphertext. This mirrors Signal's X3DH/PQXDH: a
  * post-quantum-secure agreement up front, then a classical DH ratchet per message.
  */
-import { x25519 } from "@noble/curves/ed25519";
-import { ml_kem768 } from "@noble/post-quantum/ml-kem";
-import { hkdf } from "@noble/hashes/hkdf";
-import { sha256 } from "@noble/hashes/sha2";
+import { x25519 } from "@noble/curves/ed25519.js";
+import { ml_kem768 } from "@noble/post-quantum/ml-kem.js";
+import { hkdf } from "@noble/hashes/hkdf.js";
+import { sha256 } from "@noble/hashes/sha2.js";
 import type { Identity, PublicBundle } from "./identity";
 import { encodePublicBundle } from "./identity";
 import { concatBytes, utf8, b64uEncode, b64uDecode } from "./encoding";
@@ -25,7 +25,8 @@ export interface HandshakeOffer {
   ek: string;
   /** ML-KEM-768 ciphertext encapsulated to the responder. */
   kemCt: string;
-  /** Initiator long-term signing key, so the responder can bind the identity. */
+  /** Initiator's full encoded public bundle (sign.kex.kem), so the responder can
+   *  derive its address and run DH(IK_B, IK_A). A bare signing key cannot. */
   ik: string;
 }
 
@@ -40,7 +41,7 @@ export function initiateHandshake(
   self: Identity,
   peer: PublicBundle,
 ): { sk: Uint8Array; offer: HandshakeOffer } {
-  const ekSk = x25519.utils.randomPrivateKey();
+  const ekSk = x25519.utils.randomSecretKey();
   const ekPub = x25519.getPublicKey(ekSk);
 
   const dh1 = x25519.getSharedSecret(ekSk, peer.kex); // EK_A × IK_B
@@ -53,7 +54,7 @@ export function initiateHandshake(
     offer: {
       ek: b64uEncode(ekPub),
       kemCt: b64uEncode(cipherText),
-      ik: b64uEncode(self.publicKeys.sign),
+      ik: encodePublicBundle(self.publicKeys),
     },
   };
 }

@@ -88,7 +88,10 @@ function Bubble({ m }: { m: ChatMessage }) {
       >
         {author && (
           <div style={{ fontSize: 11, color: "var(--accent)", marginBottom: 2 }} title={author.address}>
-            {author.nick} <span style={{ color: "var(--fg-dim)" }}>· {author.address.slice(4, 9)}</span>
+            {author.nick}{" "}
+            <span style={{ color: "var(--fg-dim)" }}>
+              · {author.address.startsWith("nostr:") ? author.address.slice(6, 12) : author.address.slice(4, 9)}
+            </span>
           </div>
         )}
         {m.file ? <FileAttachment m={m} /> : <div>{m.body}</div>}
@@ -208,12 +211,14 @@ export function ChatPanel() {
         </button>
         <div style={{ minWidth: 0 }}>
           <div style={{ color: "var(--accent)" }} className="glow">
-            {contact ? contact.nickname : room!.name}
+            {contact ? contact.nickname : room!.name.startsWith("geo:") ? `@${room!.name.slice(4)}` : room!.name}
           </div>
           <div style={{ fontSize: 11, color: "var(--fg-dim)", wordBreak: "break-all" }}>
             {contact
               ? contact.address
-              : room!.locked
+              : room!.name.startsWith("geo:")
+                ? "location channel · PUBLIC · via Nostr (internet) · bitchat-compatible"
+                : room!.locked
                 ? "password-protected room · sealed with the room key"
                 : "public room · anyone who knows the name can read"}
           </div>

@@ -9,6 +9,7 @@ export type Command =
   | { cmd: "who" }
   | { cmd: "clear" }
   | { cmd: "panic" }
+  | { cmd: "geo"; target?: string }
   | { cmd: "error"; message: string };
 
 export const HELP = [
@@ -16,6 +17,9 @@ export const HELP = [
   "/leave [#room]          leave the current or named room",
   "/msg <name|#room> <text>  send without switching conversation",
   "/nick <name>            set your display name in rooms",
+  "/geo city|neighborhood|block|province|region   join the public location channel where you are",
+  "/geo <geohash>          join any location channel (e.g. /geo u09tu)",
+  "                        location channels use Nostr: internet needed, posts are public, bitchat-compatible",
   "/who                    who is here",
   "/clear                  clear this conversation on this device",
   "/panic                  wipe identity, contacts and messages now",
@@ -53,6 +57,8 @@ export function parseCommand(input: string): Command {
       return { cmd: "clear" };
     case "panic":
       return { cmd: "panic" };
+    case "geo":
+      return { cmd: "geo", target: rest[0]?.toLowerCase() };
     default:
       return { cmd: "error", message: `unknown command /${head}. try /help` };
   }

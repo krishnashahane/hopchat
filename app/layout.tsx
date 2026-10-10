@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { headers } from "next/headers";
 import "./globals.css";
 import { ServiceWorker } from "@/components/ServiceWorker";
 
@@ -26,7 +27,10 @@ export const viewport: Viewport = {
   maximumScale: 1,
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // Reading the request makes the page dynamic so Next can stamp the CSP nonce
+  // from proxy.ts onto its scripts.
+  await headers();
   return (
     <html lang="en">
       <body>

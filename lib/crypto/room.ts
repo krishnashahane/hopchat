@@ -10,8 +10,8 @@
  * the author's public bundle plus an Ed25519 signature, so a member cannot post under
  * another member's address.
  */
-import { gcm } from "@noble/ciphers/aes";
-import { sha256 } from "@noble/hashes/sha2";
+import { gcm } from "@noble/ciphers/aes.js";
+import { sha256 } from "@noble/hashes/sha2.js";
 import { argon2Key } from "./vault";
 import { base32Encode, b64uEncode, b64uDecode, utf8, fromUtf8, concatBytes } from "./encoding";
 import { decodePublicBundle, deriveAddress, encodePublicBundle, type Identity } from "./identity";

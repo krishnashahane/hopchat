@@ -42,6 +42,30 @@ const NO_STORE = { "cache-control": "no-store" };
 
 const err = (error: string, status: number) => NextResponse.json({ error }, { status, headers: NO_STORE });
 
+/** Structured log line for Vercel log drains / alerts. Never includes packets or keys. */
+function logFailure(op: string, e: unknown): void {
+  console.error(JSON.stringify({ at: "relay", op, level: "error", msg: e instanceof Error ? e.message : String(e) }));
+}
+
+/** Read at most `limit` bytes of the body, even when no Content-Length is sent. */
+async function readCapped(req: Request, limit: number): Promise<string | null> {
+  if (!req.body) return "";
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > limit) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks));
+}
+
 function clientIp(req: Request): string {
   return req.headers.get("x-real-ip") ?? (req.headers.get("x-forwarded-for") ?? "unknown").split(",")[0].trim();
 }
@@ -66,7 +90,8 @@ async function readRoom(req: Request, room: string, afterRaw: string | null) {
   if (!(await rateLimit(`room:${clientIp(req)}`, 120, 60))) return err("rate_limited", 429);
   try {
     return NextResponse.json(await roomRead(room, after), { headers: NO_STORE });
-  } catch {
+  } catch (e) {
+    logFailure("room_read", e);
     return err("relay_error", 502);
   }
 }
@@ -95,7 +120,8 @@ export async function GET(req: Request) {
       if (next) items = [next, ...(await drain(addr))];
     }
     return NextResponse.json({ packets: items }, { headers: NO_STORE });
-  } catch {
+  } catch (e) {
+    logFailure("drain", e);
     return err("relay_error", 502);
   }
 }
@@ -106,12 +132,15 @@ export async function POST(req: Request) {
   if (Number(req.headers.get("content-length") ?? 0) > MAX_PACKET + 1024) return err("too_large", 413);
   if (!(await rateLimit(`send:${clientIp(req)}`, 120, 60))) return err("rate_limited", 429);
 
+  const raw = await readCapped(req, MAX_PACKET + 1024);
+  if (raw === null) return err("too_large", 413);
   let body: { to?: unknown; packet?: unknown };
   try {
-    body = (await req.json()) as { to?: unknown; packet?: unknown };
+    body = JSON.parse(raw) as { to?: unknown; packet?: unknown };
   } catch {
     return err("bad_json", 400);
   }
+  if (!body || typeof body !== "object") return err("bad_json", 400);
   const { to, packet } = body;
   if (typeof to !== "string" || typeof packet !== "string") return err("bad_request", 400);
 
@@ -124,7 +153,8 @@ export async function POST(req: Request) {
     if (packet.length > MAX_PACKET) return err("bad_packet", 400);
     await enqueue(to, packet);
     return NextResponse.json({ ok: true }, { headers: NO_STORE });
-  } catch {
+  } catch (e) {
+    logFailure("enqueue", e);
     return err("relay_error", 502);
   }
 }

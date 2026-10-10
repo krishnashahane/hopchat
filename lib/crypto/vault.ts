@@ -7,10 +7,10 @@
  * Legacy vaults (scrypt / user-agent "device" key) still open and are re-sealed
  * with the current scheme on unlock — see `needsUpgrade`.
  */
-import { argon2idAsync } from "@noble/hashes/argon2";
-import { scrypt } from "@noble/hashes/scrypt";
-import { sha256 } from "@noble/hashes/sha2";
-import { gcm } from "@noble/ciphers/aes";
+import { argon2idAsync } from "@noble/hashes/argon2.js";
+import { scrypt } from "@noble/hashes/scrypt.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { gcm } from "@noble/ciphers/aes.js";
 import { b64uEncode, b64uDecode, utf8, concatBytes } from "./encoding";
 
 export interface SealedVault {

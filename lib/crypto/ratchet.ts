@@ -11,11 +11,11 @@
  * Seeded by the hybrid post-quantum handshake (see handshake.ts): the root key `SK`
  * is post-quantum secure; the ongoing ratchet is classical DH, matching Signal/PQXDH.
  */
-import { x25519 } from "@noble/curves/ed25519";
-import { hkdf } from "@noble/hashes/hkdf";
-import { hmac } from "@noble/hashes/hmac";
-import { sha256 } from "@noble/hashes/sha2";
-import { gcm } from "@noble/ciphers/aes";
+import { x25519 } from "@noble/curves/ed25519.js";
+import { hkdf } from "@noble/hashes/hkdf.js";
+import { hmac } from "@noble/hashes/hmac.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { gcm } from "@noble/ciphers/aes.js";
 import { concatBytes, utf8, b64uEncode, b64uDecode } from "./encoding";
 
 const RK_INFO = utf8("hopchat-ratchet-root");
@@ -45,7 +45,7 @@ interface KeyPair {
 }
 
 function generateDH(): KeyPair {
-  const sk = x25519.utils.randomPrivateKey();
+  const sk = x25519.utils.randomSecretKey();
   return { sk, pk: x25519.getPublicKey(sk) };
 }
 

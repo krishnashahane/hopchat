@@ -1,0 +1,22 @@
+name: DAST
+
+# OWASP ZAP baseline (passive) scan of the live site. Fails on new high-risk alerts.
+on:
+  schedule:
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  zap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: zaproxy/action-baseline@v0.15.0
+        with:
+          target: https://hopchat.in
+          rules_file_name: .zap/rules.tsv
+          allow_issue_writing: true
