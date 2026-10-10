@@ -1,0 +1,30 @@
+name: Refresh dependency lockfile
+
+on:
+  push:
+    branches: [fix/ci-readme-hardening]
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/ci-readme-hardening
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Regenerate lockfile for patched dependencies
+        run: npm install --package-lock-only --ignore-scripts
+      - name: Commit lockfile and remove temporary workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/refresh-lock.yml
+          git add package-lock.json
+          git commit -m "chore: refresh lockfile for patched Next.js"
+          git push origin HEAD:fix/ci-readme-hardening
