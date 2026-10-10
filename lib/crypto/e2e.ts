@@ -12,11 +12,11 @@
  * Security properties: confidentiality, integrity, sender authentication,
  * forward secrecy (ephemeral DH), and post-quantum confidentiality (ML-KEM hybrid).
  */
-import { ed25519, x25519 } from "@noble/curves/ed25519";
-import { ml_kem768 } from "@noble/post-quantum/ml-kem";
-import { hkdf } from "@noble/hashes/hkdf";
-import { sha256 } from "@noble/hashes/sha2";
-import { gcm } from "@noble/ciphers/aes";
+import { ed25519, x25519 } from "@noble/curves/ed25519.js";
+import { ml_kem768 } from "@noble/post-quantum/ml-kem.js";
+import { hkdf } from "@noble/hashes/hkdf.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { gcm } from "@noble/ciphers/aes.js";
 import type { Identity, PublicBundle } from "./identity";
 import { concatBytes, utf8, b64uEncode, b64uDecode } from "./encoding";
 
@@ -47,7 +47,7 @@ function transcript(ephPub: Uint8Array, kemCt: Uint8Array, nonce: Uint8Array, ct
 }
 
 export function seal(sender: Identity, recipient: PublicBundle, plaintext: Uint8Array): SealedEnvelope {
-  const ephSk = x25519.utils.randomPrivateKey();
+  const ephSk = x25519.utils.randomSecretKey();
   const ephPub = x25519.getPublicKey(ephSk);
 
   const ecdh = x25519.getSharedSecret(ephSk, recipient.kex);

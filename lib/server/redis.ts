@@ -102,7 +102,8 @@ export async function waitNext(addr: string, timeoutSec = 20): Promise<string | 
 
 /**
  * Fixed-window rate limit. Returns true if the caller is within budget.
- * Fails open (allows) if Redis is unreachable — availability over strictness.
+ * Fails closed: if Redis cannot count, the relay cannot work anyway, and an
+ * unenforced limit would let a flood through the moment Redis recovers.
  */
 export async function rateLimit(bucket: string, limit: number, windowSec: number): Promise<boolean> {
   try {
@@ -113,6 +114,6 @@ export async function rateLimit(bucket: string, limit: number, windowSec: number
     ]);
     return count <= limit;
   } catch {
-    return true;
+    return false;
   }
 }

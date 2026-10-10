@@ -29,6 +29,10 @@ Direct transports planned. Relays only ever see opaque ciphertext.
 - **IRC-style commands** — `/join #room [password]`, `/leave`, `/msg`, `/nick`, `/who`, `/clear`, `/panic`, `/help`.
 - **Password-protected rooms** — room key = Argon2id(password, name); posts are signed by their author.
 - **Panic mode** — tap the HOPCHAT logo 3 times to wipe keys, contacts, messages and caches instantly.
+- **Location channels (optional)** — `/geo city` (or `/geo <geohash>`) joins a public, bitchat-compatible
+  channel for your area over Nostr. Needs internet; posts are public; each area uses an unlinkable key.
+- **Encrypted at rest** — messages, files, sessions, contacts and room keys are sealed in IndexedDB
+  under a data key that lives inside the identity vault.
 - **Works when the internet doesn't** — same-device and direct WebRTC links need no server; the optional
   internet relay bridges distant peers and can be switched off.
 

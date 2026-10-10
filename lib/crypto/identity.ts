@@ -9,9 +9,9 @@
  * The public address is a Crockford-Base32 fingerprint of the hashed public bundle,
  * so it is short, human-verifiable, and collision-resistant.
  */
-import { ed25519, x25519 } from "@noble/curves/ed25519";
-import { ml_kem768 } from "@noble/post-quantum/ml-kem";
-import { sha256 } from "@noble/hashes/sha2";
+import { ed25519, x25519 } from "@noble/curves/ed25519.js";
+import { ml_kem768 } from "@noble/post-quantum/ml-kem.js";
+import { sha256 } from "@noble/hashes/sha2.js";
 import { base32Encode, b64uEncode, b64uDecode, concatBytes } from "./encoding";
 
 export interface PublicBundle {
@@ -58,10 +58,10 @@ export function fingerprintHex(pub: PublicBundle): string {
 }
 
 export function createIdentity(): Identity {
-  const signSk = ed25519.utils.randomPrivateKey();
+  const signSk = ed25519.utils.randomSecretKey();
   const signPk = ed25519.getPublicKey(signSk);
 
-  const kexSk = x25519.utils.randomPrivateKey();
+  const kexSk = x25519.utils.randomSecretKey();
   const kexPk = x25519.getPublicKey(kexSk);
 
   const kem = ml_kem768.keygen();

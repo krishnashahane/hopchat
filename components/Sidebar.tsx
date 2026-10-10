@@ -110,10 +110,10 @@ export function Sidebar({
             r.name,
             r.name === activeAddr,
             <>
-              <span>{r.name}</span>
+              <span>{r.name.startsWith("geo:") ? `@${r.name.slice(4)}` : r.name}</span>
               {r.locked && <span className="tag" title="password-protected">locked</span>}
             </>,
-            r.locked ? "private room" : "public room",
+            r.name.startsWith("geo:") ? "location · public · nostr" : r.locked ? "private room" : "public room",
             () => selectContact(r.name),
           ),
         )}

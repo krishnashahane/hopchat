@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { gcm } from "@noble/ciphers/aes";
-import { scrypt } from "@noble/hashes/scrypt";
+import { gcm } from "@noble/ciphers/aes.js";
+import { scrypt } from "@noble/hashes/scrypt.js";
 import { sealVault, openVault, needsUpgrade, needsPassphrase, type SealedVault } from "./vault";
 import { b64uEncode, utf8 } from "./encoding";
 

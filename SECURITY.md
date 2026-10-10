@@ -32,6 +32,8 @@ public issue for undisclosed vulnerabilities. We aim to acknowledge within 72 ho
 | Identity binding | AEAD AAD binds sender + recipient signing keys |
 | At-rest | Argon2id (m=19 MiB, t=2, p=1) → AES-256-GCM, or a non-extractable WebCrypto device key; legacy scrypt vaults are re-sealed on unlock |
 | Rooms | Argon2id(password, H(name)) → AES-256-GCM; posts Ed25519-signed |
+| Local data | AES-256-GCM per row (AAD = store + row id) under a random data key kept inside the vault |
+| Location channels | Nostr kind-20000, BIP-340 Schnorr, per-geohash key derived from the identity; **public, not encrypted** |
 
 Primitives come from the audited [`@noble`](https://paulmillr.com/noble/) libraries.
 Keys are generated with the platform CSPRNG (`crypto.getRandomValues`) and never
@@ -39,8 +41,9 @@ leave the device.
 
 ## Transport & web hardening
 
-- Strict Content-Security-Policy: `default-src 'self'`, no third-party origins,
-  `object-src 'none'`, `frame-ancestors 'none'`, `base-uri 'self'`.
+- Strict Content-Security-Policy with a fresh per-request script nonce + `'strict-dynamic'`
+  (no `'unsafe-inline'` scripts), `object-src 'none'`, `frame-ancestors 'none'`, `base-uri 'self'`.
+  `connect-src` allows only this origin and bitchat's five Nostr relays (used only after `/geo`).
 - HSTS (2 years, preload), `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
   `Referrer-Policy: no-referrer`, restrictive `Permissions-Policy`, `powered-by` removed.
 - No analytics, telemetry, cookies, or third-party network calls.
@@ -75,4 +78,9 @@ service worker, then reloads empty. There is no confirmation by design.
 - **TLS 1.3:** terminated by Vercel's edge (TLS 1.2/1.3); HSTS preload is sent.
 - **Passwords + MFA:** HopChat has no accounts, so there is nothing to log in to. The
   local passphrase uses Argon2id. Enable MFA on the GitHub, Vercel and GoDaddy accounts.
-- **Pen test / bug bounty:** not yet commissioned. Reports via the process above are welcome.
+- **Pen test / bug bounty:** no paid third-party pen test or bounty programme yet. Automated
+  checks run instead: OWASP ZAP baseline (weekly, `dast.yml`), uptime/TLS/header probe every 30
+  minutes (`uptime.yml`), CodeQL, gitleaks. Reports: `/.well-known/security.txt` → GitHub advisories.
+- **Signed commits:** commits in this repo are SSH-signed; `main` requires signed commits and passing CI.
+- **Logging & alerts:** relay errors are logged as structured JSON (never packets or keys) to Vercel
+  logs; failing uptime/DAST workflows email the repo owner.

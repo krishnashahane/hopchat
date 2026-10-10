@@ -21,8 +21,9 @@ import {
 } from "@/lib/crypto/identity";
 import { sealVault, openVault, needsPassphrase, needsUpgrade, type SealedVault } from "@/lib/crypto/vault";
 import { deriveRoom, normalizeRoom } from "@/lib/crypto/room";
-import { b64uEncode } from "@/lib/crypto/encoding";
+import { b64uEncode, b64uDecode } from "@/lib/crypto/encoding";
 import { HELP, NICK, isCommand, parseCommand } from "@/lib/commands";
+import { GeoRelayPool, GEOHASH, GEO_LEVELS, MAX_GEO_BODY, encodeGeohash, geoKey, geoPubkey, signGeoEvent, type GeoPost } from "@/lib/nostr";
 import { Messenger } from "@/lib/messenger";
 import * as db from "@/lib/storage/db";
 import type { StoredRoom } from "@/lib/storage/db";
@@ -84,6 +85,24 @@ const store = {
   },
 };
 
+/** Random 256-bit key that seals local data; stored only inside the identity vault. */
+const newDataKey = () => b64uEncode(crypto.getRandomValues(new Uint8Array(32)));
+
+/** Location channels are stored like rooms, under this name prefix. */
+const GEO = "geo:";
+const isGeo = (name: string) => name.startsWith(GEO);
+
+function currentGeohash(precision: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (!("geolocation" in navigator)) return reject(new Error("location is not available in this browser"));
+    navigator.geolocation.getCurrentPosition(
+      (p) => resolve(encodeGeohash(p.coords.latitude, p.coords.longitude, precision)),
+      () => reject(new Error("location permission denied")),
+      { enableHighAccuracy: false, timeout: 15_000, maximumAge: 300_000 },
+    );
+  });
+}
+
 const defaultNick = (addr: string) => `anon-${addr.replace("HOP-", "").slice(0, 4).toLowerCase()}`;
 
 /** Everything a panic wipe must erase beyond IndexedDB. */
@@ -119,6 +138,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const messengerRef = useRef<Messenger | null>(null);
   const activeRef = useRef<string | null>(null);
   const noticeId = useRef(0);
+  const geoPool = useRef<GeoRelayPool | null>(null);
+  const identityRef = useRef<Identity | null>(null);
 
   const notify = useCallback((lines: string | string[], tone: Notice["tone"] = "info") => {
     const add = (Array.isArray(lines) ? lines : [lines]).map((text) => ({ id: ++noticeId.current, text, tone }));
@@ -130,7 +151,28 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setMessages(addr ? await db.listMessages(addr) : []);
   }, []);
 
+  /** Lazily open the Nostr pool — nothing touches Nostr until a /geo channel is joined. */
+  const pool = useCallback(() => {
+    geoPool.current ??= new GeoRelayPool(async (post: GeoPost) => {
+      const me = identityRef.current;
+      const peer = GEO + post.geohash;
+      const mine = me ? geoPubkey(me, post.geohash) === post.pubkey : false;
+      await db.addMessage({
+        id: post.id,
+        peer,
+        direction: mine ? "out" : "in",
+        body: post.body,
+        createdAt: post.ts,
+        status: "delivered",
+        author: { nick: post.nick, address: `nostr:${post.pubkey.slice(0, 8)}` },
+      });
+      if (activeRef.current === peer) void refreshActive();
+    });
+    return geoPool.current;
+  }, [refreshActive]);
+
   const bootMessenger = useCallback(async (id: Identity) => {
+    identityRef.current = id;
     const m = new Messenger(id);
     await m.load();
     messengerRef.current = m;
@@ -144,7 +186,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
     });
     const joined = await db.listRooms();
-    for (const r of joined) m.joinRoom(r);
+    for (const r of joined) {
+      if (isGeo(r.name)) pool().subscribe(r.name.slice(GEO.length));
+      else m.joinRoom(r);
+    }
     setRooms(joined);
     setContacts(await db.listContacts());
     const pref = store.get("hop.relay") !== "0";
@@ -154,17 +199,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setIdentity(id);
     setPhase("ready");
     void db.purgeExpired();
-  }, [refreshActive]);
+  }, [refreshActive, pool]);
 
-  /** Open the vault; re-seal legacy (scrypt / user-agent) vaults with the current scheme. */
+  /**
+   * Open the vault and unlock local storage with the data key kept inside it.
+   * Legacy vaults (scrypt / user-agent key, or no data key yet) are re-sealed with
+   * the current scheme, and any rows still stored in the clear are sealed.
+   */
   const openIdentity = useCallback(async (vault: SealedVault, passphrase?: string) => {
     const deviceKey = needsPassphrase(vault) ? undefined : await db.deviceKey();
-    const secret = await openVault(vault, { passphrase, deviceKey });
-    const id = deserializeSecret(JSON.parse(secret));
-    if (needsUpgrade(vault)) {
-      const upgraded = await sealVault(secret, passphrase ? { passphrase } : { deviceKey: await db.deviceKey() });
+    const secret = JSON.parse(await openVault(vault, { passphrase, deviceKey })) as Record<string, string>;
+    const id = deserializeSecret(secret);
+    if (needsUpgrade(vault) || !secret.dk) {
+      secret.dk ??= newDataKey();
+      const upgraded = await sealVault(JSON.stringify(secret), passphrase ? { passphrase } : { deviceKey: await db.deviceKey() });
       await db.saveIdentityRecord({ vault: upgraded, address: id.address, bundle: encodePublicBundle(id.publicKeys) });
     }
+    db.setDataKey(b64uDecode(secret.dk));
+    await db.sealLegacyRows();
     return id;
   }, []);
 
@@ -209,11 +261,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     async (passphrase?: string) => {
       setError(null);
       const id = genIdentity();
+      const dk = newDataKey();
       const vault = await sealVault(
-        JSON.stringify(serializeSecret(id)),
+        JSON.stringify({ ...serializeSecret(id), dk }),
         passphrase ? { passphrase } : { deviceKey: await db.deviceKey() },
       );
       await db.saveIdentityRecord({ vault, address: id.address, bundle: encodePublicBundle(id.publicKeys) });
+      db.setDataKey(b64uDecode(dk));
       await bootMessenger(id);
     },
     [bootMessenger],
@@ -267,7 +321,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     async (target: string, body: string, selfDestructMs?: number) => {
       const m = messengerRef.current;
       if (!m) return;
-      if (target.startsWith("#")) {
+      if (isGeo(target)) {
+        const gh = target.slice(GEO.length);
+        if (!identityRef.current || !rooms.some((r) => r.name === target)) return notify(`not in ${target}. /geo ${gh} first`, "error");
+        if (body.length > MAX_GEO_BODY) return notify(`too long (max ${MAX_GEO_BODY} characters)`, "error");
+        const ev = signGeoEvent(geoKey(identityRef.current, gh), gh, nick, body);
+        if (pool().publish(ev) === 0) return notify("no Nostr relay connected yet — location channels need internet. try again in a moment", "error");
+        await db.addMessage({
+          id: ev.id,
+          peer: target,
+          direction: "out",
+          body,
+          createdAt: ev.created_at * 1000,
+          status: "sent",
+          author: { nick, address: `nostr:${ev.pubkey.slice(0, 8)}` },
+        });
+      } else if (target.startsWith("#")) {
         const room = rooms.find((r) => r.name === target);
         if (!room) return notify(`not in ${target}. /join ${target} first`, "error");
         await m.sendRoom(room.dest, nick, body);
@@ -278,10 +347,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
       if (target === activeRef.current) await refreshActive();
     },
-    [contacts, rooms, nick, notify, refreshActive],
+    [contacts, rooms, nick, notify, refreshActive, pool],
   );
 
   const reset = useCallback(async () => {
+    geoPool.current?.close();
+    geoPool.current = null;
+    identityRef.current = null;
     messengerRef.current?.destroy();
     messengerRef.current = null;
     await db.clearAll();
@@ -297,6 +369,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   /** Panic: destroy keys, history, caches and preferences, then reload to a blank app. */
   const panic = useCallback(async () => {
+    geoPool.current?.close();
+    geoPool.current = null;
     messengerRef.current?.destroy();
     messengerRef.current = null;
     await db.destroy().catch(() => {});
@@ -341,10 +415,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           );
         }
         case "leave": {
-          const name = c.room ? normalizeRoom(c.room) : activeRef.current;
+          const name = c.room ? (isGeo(c.room) ? c.room : normalizeRoom(c.room)) : activeRef.current;
           const room = rooms.find((r) => r.name === name);
           if (!room || !m) return notify("not in that room", "error");
-          m.leaveRoom(room.dest);
+          if (isGeo(room.name)) geoPool.current?.unsubscribe(room.name.slice(GEO.length));
+          else m.leaveRoom(room.dest);
           await db.deleteRoom(room.name);
           await db.clearMessages(room.name);
           setRooms(await db.listRooms());
@@ -383,9 +458,34 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
         case "panic":
           return panic();
+        case "geo": {
+          const t = c.target;
+          if (!t) return notify(["usage: /geo city|neighborhood|block|province|region, or /geo <geohash>", ...HELP.filter((l) => l.includes("Nostr"))]);
+          let gh: string;
+          if (t in GEO_LEVELS) {
+            notify("getting your location (it stays on this device; only the cell name is used)…");
+            try {
+              gh = await currentGeohash(GEO_LEVELS[t]);
+            } catch (e) {
+              return notify(e instanceof Error ? e.message : "location unavailable", "error");
+            }
+          } else if (GEOHASH.test(t)) {
+            gh = t;
+          } else {
+            return notify("not a geohash or level. try /geo city", "error");
+          }
+          const name = GEO + gh;
+          if (!rooms.some((r) => r.name === name)) {
+            await db.saveRoom({ name, dest: "nostr", key: "", locked: false, joinedAt: Date.now() });
+            setRooms(await db.listRooms());
+          }
+          pool().subscribe(gh);
+          await selectContact(name);
+          return notify(`joined location channel ${gh}. posts here are PUBLIC and go over the internet via Nostr (bitchat-compatible).`);
+        }
       }
     },
-    [contacts, rooms, nick, identity, peerCount, netOnline, notify, selectContact, deselect, deliver, refreshActive, panic],
+    [contacts, rooms, nick, identity, peerCount, netOnline, notify, selectContact, deselect, deliver, refreshActive, panic, pool],
   );
 
   const submit = useCallback(

@@ -1,0 +1,28 @@
+name: Uptime
+
+# Fails (GitHub emails the repo owner) if the site, TLS or the relay breaks.
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Site, TLS and security headers
+        run: |
+          h=$(curl -sS -D - -o /dev/null --tlsv1.2 https://hopchat.in/)
+          echo "$h" | grep -q "^HTTP/2 200" || { echo "site down"; exit 1; }
+          echo "$h" | grep -qi "^content-security-policy:.*nonce-" || { echo "CSP missing"; exit 1; }
+          echo "$h" | grep -qi "^strict-transport-security:" || { echo "HSTS missing"; exit 1; }
+      - name: www redirects to apex
+        run: |
+          test "$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' https://www.hopchat.in/)" = "308 https://hopchat.in/"
+      - name: Relay answers
+        run: |
+          code=$(curl -sS -o /dev/null -w '%{http_code}' "https://hopchat.in/api/relay?room=ROOM-AAAAAAAAAAAAAAAAAAAAAAAA&after=0")
+          test "$code" = "200" || { echo "relay returned $code"; exit 1; }

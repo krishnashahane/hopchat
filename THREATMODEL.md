@@ -49,9 +49,13 @@ threats → mitigations → residual-risk shape. Read alongside `SECURITY.md` an
 | **S**poofing | Fake sender / room author; draining someone's relay inbox | Address = hash of key bundle; Double Ratchet session from authenticated handshake; room posts Ed25519-signed; relay drain needs a fresh, single-use signature |
 | **T**ampering | Altered packets on a hop or at the relay | AES-256-GCM everywhere (room AAD = destination); router validates shape, TTL, timestamp |
 | **R**epudiation | — (deniable by design for 1:1; room posts are signed) | Not a goal; no server logs of content |
-| **I**nformation disclosure | Ciphertext at relays, keys on disk, auth in URLs | E2E only; vault sealed with Argon2id or non-extractable WebCrypto key; relay auth in headers, never URLs; SW never caches `/api/*` |
+| **I**nformation disclosure | Ciphertext at relays, data on disk, auth in URLs | E2E only; vault sealed with Argon2id or non-extractable WebCrypto key; messages/sessions/contacts/room keys sealed at rest; relay auth in headers, never URLs; SW never caches `/api/*` |
 | **D**enial of service | Mesh flood, relay spam, file-transfer memory | 7-hop cap + dedup + replay window; relay rate limits and size caps; ≤8 pending transfers, chunk size checked |
-| **E**levation of privilege | XSS stealing keys; hostile files | Strict CSP (`connect-src 'self'`, no third-party origins); incoming files that are not raster images are stored as `application/octet-stream` and only downloaded |
+| **E**levation of privilege | XSS stealing keys; hostile files | Nonce-based CSP with `'strict-dynamic'` (no inline script), `connect-src` limited to self + Nostr relays; incoming files that are not raster images are stored as `application/octet-stream` and only downloaded |
+
+Location channels are public by design (bitchat-compatible): anyone subscribed to a
+geohash cell reads its posts, and Nostr relays see the cell and your IP. They are opt-in
+(`/geo`), and the per-cell Schnorr key keeps posts in different cells unlinkable.
 
 Room confidentiality is only as strong as the room password: a room with no password
 is public to anyone who knows its name, and Argon2id slows but cannot stop guessing a
