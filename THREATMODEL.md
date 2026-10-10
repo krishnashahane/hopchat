@@ -1,68 +1,61 @@
 # HopChat Threat Model
 
-A structured threat model for the HopChat mesh, following an assets → adversaries →
-threats → mitigations → residual-risk shape. Read alongside `SECURITY.md` and
-`PROTOCOL.md`.
+This document records assets, adversaries, mitigations, and residual risks for the
+current implementation. Read it alongside [`SECURITY.md`](./SECURITY.md),
+[`ARCHITECTURE.md`](./ARCHITECTURE.md), and [`PROTOCOL.md`](./PROTOCOL.md).
 
 ## Assets
 
-- **A1 Message content** — plaintext of one-to-one messages.
-- **A2 Identity secret keys** — Ed25519/X25519/ML-KEM private keys on the device.
-- **A3 Session state** — Double Ratchet keys (root/chain/message keys).
-- **A4 Social graph & metadata** — who talks to whom, when, how often.
-- **A5 Availability** — ability to deliver messages across the mesh.
+- **A1 Message content** — plaintext conversation history and in-flight messages.
+- **A2 Identity secret keys** — Ed25519/X25519/ML-KEM private keys.
+- **A3 Session state** — Double Ratchet root, chain, skipped-message, and DH keys.
+- **A4 Social graph and metadata** — who communicates with whom, when, and how often.
+- **A5 Availability** — ability to exchange and deliver packets.
 
 ## Adversaries
 
-- **AD1 Passive network/relay** — a mesh node or on-path observer that reads/relays
-  ciphertext but follows the protocol.
-- **AD2 Active relay** — a malicious relay that drops, reorders, replays, injects, or
-  forges packets.
-- **AD3 Near-future quantum adversary** — records ciphertext now, decrypts later with
-  a quantum computer (harvest-now-decrypt-later).
-- **AD4 Device thief** — obtains the physical device (locked, app closed).
-- **AD5 Endpoint malware** — code running on an unlocked device with app access.
+- **AD1 Network observer or relay** — observes or forwards traffic.
+- **AD2 Active relay** — drops, reorders, replays, injects, or floods packets.
+- **AD3 Future quantum adversary** — records ciphertext for possible later analysis.
+- **AD4 Device thief** — obtains local device or browser data.
+- **AD5 Endpoint malware** — executes with access to an unlocked client.
 
-## Threats & mitigations
+## Threats and mitigations
 
-| # | Threat | Adversary | Mitigation | Status |
-|---|---|---|---|---|
-| T1 | Read message content in transit | AD1, AD2 | E2E AES-256-GCM under Double-Ratchet keys; relays see only ciphertext | ✅ |
-| T2 | Forge or alter a message | AD2 | AEAD integrity + session keys derived from an authenticated handshake `DH(IK_A,IK_B)`; forged `from` cannot decrypt/encrypt | ✅ |
-| T3 | Impersonate a contact | AD2 | Identity = key fingerprint (`HOP-…` address); out-of-band fingerprint verification; handshake binds long-term identity keys | ✅ |
-| T4 | Replay a captured packet | AD2 | Per-packet id dedup (LRU) + ±5-min `ts` replay window; ratchet message numbers reject duplicates | ✅ |
-| T5 | Decrypt later with a quantum computer | AD3 | Hybrid ML-KEM-768 in the handshake KDF; secure unless **both** X25519 and ML-KEM break | ✅ |
-| T6 | Recover past messages after key theft | AD4, AD5 | Per-message forward secrecy; message keys deleted after use | ✅ |
-| T7 | Keep reading after a one-time key compromise | AD5 | Post-compromise security: DH ratchet step re-randomizes the root key | ✅ |
-| T8 | Read secret keys off a stolen device | AD4 | Identity sealed at rest with scrypt(N=2¹⁶)+AES-256-GCM; passphrase never stored | ✅ |
-| T9 | Handshake-reset / downgrade | AD2 | Established sessions ignore new offers; deterministic glare tie-break | ✅ |
-| T10 | Exhaust memory via skipped-key flood | AD2 | Skipped keys bounded to 256; oversized skips rejected | ✅ |
-| T11 | Web injection (XSS) exfiltrating keys | AD1 | Strict CSP (`default-src 'self'`, `object-src 'none'`), no third-party origins, no inline script beyond framework, React auto-escaping | ✅ |
-| T12 | Clickjacking / framing | AD1 | `frame-ancestors 'none'`, `X-Frame-Options: DENY` | ✅ |
-| T13 | Traffic-analysis of the social graph | AD1, AD2 | Content protected; `to`/`from` hints are cleartext — **partial** | ⚠️ |
-| T14 | Availability / mesh DoS (flooding) | AD2 | TTL + dedup bound propagation; not eliminated | ⚠️ |
+| # | Threat | Mitigation in the current design | Status |
+| --- | --- | --- | --- |
+| T1 | Read message content in transit | Encrypted message payloads; relay stores opaque packets | Designed, not independently audited |
+| T2 | Alter encrypted message contents | AES-GCM authentication and ratchet-derived keys | Designed, not independently audited |
+| T3 | Impersonate a contact | Public-key identity/address and optional out-of-band fingerprint verification | Partial; contact verification is a user action |
+| T4 | Replay packets | Router deduplication, timestamp window, ratchet state | Partial; relay may still replay or drop traffic |
+| T5 | Future quantum attacks | X25519 and ML-KEM-768 are combined in the key agreement path | Unverified protocol claim; no independent review |
+| T6 | Recover prior plaintext after device compromise | Ratchet message keys advance and are not retained after normal use | Partial; local message history is stored as plaintext in IndexedDB |
+| T7 | Continue reading after a key compromise | DH ratchet steps derive fresh root/chain material | Unverified protocol claim; no independent review |
+| T8 | Read identity/session secrets from a stolen device | Optional passphrase-protected identity vault | Partial; device-key mode is weak and session state is stored unencrypted |
+| T9 | Exhaust memory using skipped keys | Skipped-message storage is bounded | Partial; resource exhaustion is not eliminated |
+| T10 | Browser injection or XSS | CSP, React escaping, framing restrictions | Partial; CSP permits inline scripts |
+| T11 | Clickjacking | `frame-ancestors 'none'` and `X-Frame-Options: DENY` | Mitigated by response headers |
+| T12 | Traffic analysis of social graph | Payload encryption | Not mitigated; routing addresses are visible |
+| T13 | Relay flooding or service disruption | Request rate limits, bounded inbox, TTL, atomic drain | Partial; distributed DoS remains possible |
 
-## Residual risk (explicitly out of scope for v1)
+## Residual risks
 
-- **Metadata privacy (T13).** Routing hints reveal sender/recipient to relays.
-  Roadmap: sealed-sender (encrypt `from`), constant-rate cover traffic, and address
-  rotation for unlinkability.
-- **Malicious endpoint (AD5).** An unlocked, malware-infected device is game over for
-  that device's messages — inherent to any messenger. Roadmap: secure-enclave /
-  platform-keystore binding so keys are non-exportable, biometric unlock.
-- **Denial of service (T14).** Bounded but not prevented; native builds add
-  per-peer rate limiting and proof-of-relay backpressure.
-- **Global passive adversary** correlating timing across the whole mesh is not
-  defeated without cover traffic (roadmap).
+- **Local data at rest:** Message bodies and serialized ratchet keys in IndexedDB are
+  not encrypted. Anyone who can read the browser database may recover them.
+- **Weak device mode:** The no-passphrase vault key depends on browser/device
+  attributes, not a hardware-backed secret.
+- **Metadata privacy:** Routing hints reveal sender and recipient addresses to relays.
+  Sealed sender, cover traffic, and address rotation are not implemented.
+- **Relay abuse:** Sending packets does not require sender authentication. Rate limits
+  depend on Redis and a trusted deployment IP header; determined distributed abuse
+  can still reduce availability.
+- **Endpoint compromise:** Malware running within an unlocked client can access data
+  available to that client.
+- **Cryptographic assurance:** These are project-specific cryptographic compositions.
+  Passing tests is not equivalent to a formal protocol review or independent audit.
 
-## Verification & process
+## Verification process
 
-- Cryptographic primitives are the audited `@noble` implementations; no home-rolled
-  primitives. Key generation uses the platform CSPRNG.
-- Ratchet correctness (ping-pong, out-of-order, cross-ratchet skips, tamper,
-  persistence) and mesh routing (dedup, TTL, replay) are covered by unit tests that
-  run in CI on every commit.
-- `npm audit` is kept at zero known vulnerabilities.
-- Any change touching `lib/crypto/**` or `lib/mesh/**` requires a design note and
-  test coverage before merge.
-```
+Changes to `lib/crypto/**`, `lib/mesh/**`, or relay code should include focused
+regression tests. CI runs the current unit/integration suite, TypeScript checks,
+production build, and dependency audit on pull requests.
