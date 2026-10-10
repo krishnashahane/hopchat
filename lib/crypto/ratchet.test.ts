@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createIdentity } from "./identity";
+import { createIdentity, decodePublicBundle, deriveAddress } from "./identity";
 import { initiateHandshake, respondHandshake } from "./handshake";
 import { DoubleRatchet } from "./ratchet";
 import { utf8, fromUtf8, b64uEncode } from "./encoding";
@@ -13,7 +13,8 @@ function establish() {
   const alice = createIdentity();
   const bob = createIdentity();
   const { sk: skA, offer } = initiateHandshake(alice, bob.publicKeys);
-  const skB = respondHandshake(bob, alice.publicKeys, offer);
+  const peerBundle = decodePublicBundle(offer.ik);
+  const skB = respondHandshake(bob, peerBundle, offer);
   expect(equal(skA, skB)).toBe(true);
 
   const a = DoubleRatchet.initSender(skA, bob.publicKeys.kex);
@@ -22,11 +23,23 @@ function establish() {
 }
 
 describe("hybrid PQ handshake", () => {
+  it("includes a decodable full identity bundle in the offer", () => {
+    const alice = createIdentity();
+    const bob = createIdentity();
+    const { offer } = initiateHandshake(alice, bob.publicKeys);
+    const bundledIdentity = decodePublicBundle(offer.ik);
+
+    expect(deriveAddress(bundledIdentity)).toBe(alice.address);
+    expect(equal(bundledIdentity.sign, alice.publicKeys.sign)).toBe(true);
+    expect(equal(bundledIdentity.kex, alice.publicKeys.kex)).toBe(true);
+    expect(equal(bundledIdentity.kem, alice.publicKeys.kem)).toBe(true);
+  });
+
   it("derives an identical shared secret on both sides", () => {
     const alice = createIdentity();
     const bob = createIdentity();
     const { sk: skA, offer } = initiateHandshake(alice, bob.publicKeys);
-    const skB = respondHandshake(bob, alice.publicKeys, offer);
+    const skB = respondHandshake(bob, decodePublicBundle(offer.ik), offer);
     expect(equal(skA, skB)).toBe(true);
     expect(skA.length).toBe(32);
   });
@@ -69,7 +82,6 @@ describe("DoubleRatchet", () => {
     const m1 = a.encrypt(utf8("one"));
     const m2 = a.encrypt(utf8("two"));
     const m3 = a.encrypt(utf8("three"));
-    // Deliver 3, then 1, then 2.
     expect(fromUtf8(b.decrypt(m3))).toBe("three");
     expect(fromUtf8(b.decrypt(m1))).toBe("one");
     expect(fromUtf8(b.decrypt(m2))).toBe("two");
@@ -81,7 +93,6 @@ describe("DoubleRatchet", () => {
     b.decrypt(a1);
     const b1 = b.encrypt(utf8("b1"));
     a.decrypt(b1);
-    // Alice sends two, Bob receives them reordered after her ratchet.
     const a2 = a.encrypt(utf8("a2"));
     const a3 = a.encrypt(utf8("a3"));
     expect(fromUtf8(b.decrypt(a3))).toBe("a3");
@@ -99,10 +110,8 @@ describe("DoubleRatchet", () => {
     const { a, b } = establish();
     b.decrypt(a.encrypt(utf8("a1")));
     a.decrypt(b.encrypt(utf8("b1")));
-
     const aResumed = DoubleRatchet.deserialize(JSON.parse(JSON.stringify(a.serialize())));
     const bResumed = DoubleRatchet.deserialize(JSON.parse(JSON.stringify(b.serialize())));
-
     expect(fromUtf8(bResumed.decrypt(aResumed.encrypt(utf8("after reload"))))).toBe("after reload");
   });
 });
