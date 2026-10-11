@@ -155,11 +155,12 @@ export class RelayTransport implements Transport {
   }
 
   private async loop(): Promise<void> {
+    let quick = true; // first poll (and the one after any failure) returns at once
     while (this.running) {
       this.abort = new AbortController();
       try {
         const res = await fetch("/api/relay", {
-          headers: this.signedHeaders(),
+          headers: { ...this.signedHeaders(), ...(quick ? { "x-hop-wait": "0" } : {}) },
           signal: this.abort.signal,
           cache: "no-store",
         });
@@ -172,6 +173,7 @@ export class RelayTransport implements Transport {
         if (res.status === 401) this.syncClock(res);
         if (!res.ok) throw new Error(`relay ${res.status}`);
         this.setOnline(true);
+        quick = false;
         const { packets } = (await res.json()) as { packets: string[] };
         for (const raw of packets ?? []) {
           try {
@@ -182,6 +184,7 @@ export class RelayTransport implements Transport {
         }
       } catch {
         if (!this.running) break;
+        quick = true;
         this.setOnline(false);
         await this.sleep(3_000); // transient error — reconnect
       }

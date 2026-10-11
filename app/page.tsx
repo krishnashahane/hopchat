@@ -40,7 +40,7 @@ function Workspace() {
 export default function Page() {
   return (
     <AppProvider>
-      <main className="h-screen w-screen overflow-hidden">
+      <main className="app-root">
         <Workspace />
       </main>
     </AppProvider>

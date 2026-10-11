@@ -68,7 +68,9 @@ export async function GET(req: Request) {
   try {
     if (!(await burn(me))) return err("replayed", 401);
     let items = await drain(addr);
-    if (items.length === 0) {
+    // `x-hop-wait: 0` asks for an immediate answer (first poll), so the client can
+    // show "online" at once instead of after a full long-poll.
+    if (items.length === 0 && req.headers.get("x-hop-wait") !== "0") {
       const next = await waitNext(addr, 20);
       if (next) items = [next, ...(await drain(addr))];
     }
