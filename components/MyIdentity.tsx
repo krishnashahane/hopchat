@@ -6,8 +6,21 @@ import { QR } from "./QR";
 import { useApp } from "@/lib/hooks/useApp";
 
 export function MyIdentity({ onClose }: { onClose: () => void }) {
-  const { identity, myBundle, reset, relayEnabled, setRelayEnabled, netOnline } = useApp();
+  const { identity, myBundle, reset, relayEnabled, setRelayEnabled, netOnline, pushEnabled, setPushEnabled } = useApp();
   const [confirmReset, setConfirmReset] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushErr, setPushErr] = useState<string | null>(null);
+
+  const togglePush = async (on: boolean) => {
+    setPushBusy(true);
+    setPushErr(null);
+    try {
+      await setPushEnabled(on);
+    } catch (e) {
+      setPushErr(e instanceof Error ? e.message : "could not change notifications");
+    }
+    setPushBusy(false);
+  };
   if (!identity || !myBundle) return null;
 
   return (
@@ -68,6 +81,27 @@ export function MyIdentity({ onClose }: { onClose: () => void }) {
           <div style={{ fontSize: 10, color: "var(--fg-dim)", marginTop: 4 }}>
             off = local-only mesh (same-device + direct WebRTC links).
           </div>
+          {pushEnabled !== null && (
+            <label
+              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", padding: "10px 0 0" }}
+            >
+              <span>
+                <span style={{ color: "var(--fg)" }}>notifications</span>
+                <span style={{ display: "block", fontSize: 10, color: "var(--fg-dim)" }}>
+                  wake this device when a message waits on the relay · no content or sender is sent;
+                  your browser&apos;s push service sees only the timing
+                </span>
+              </span>
+              <input
+                type="checkbox"
+                checked={pushEnabled}
+                disabled={pushBusy || !relayEnabled}
+                onChange={(e) => void togglePush(e.target.checked)}
+                style={{ width: 16, height: 16, accentColor: "var(--accent)" }}
+              />
+            </label>
+          )}
+          {pushErr && <div style={{ fontSize: 10, color: "var(--danger)", marginTop: 4 }}>{pushErr}</div>}
         </div>
 
         <div style={{ borderTop: "1px solid var(--line)", paddingTop: 12 }}>

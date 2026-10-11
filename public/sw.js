@@ -8,8 +8,11 @@
  *   - Everything else same-origin: stale-while-revalidate.
  * Cross-origin (e.g. STUN) requests and /api/* are never intercepted: relay responses
  * carry live ciphertext and must never be cached or replayed.
+ *
+ * Push: the relay sends empty wake-ups. Nothing about the message is in them, so the
+ * notification is generic; opening the app fetches and decrypts.
  */
-const VERSION = "hopchat-v5";
+const VERSION = "hopchat-v6";
 const SHELL = `${VERSION}-shell`;
 const RUNTIME = `${VERSION}-runtime`;
 const APP_SHELL = ["/", "/manifest.webmanifest", "/icon.svg"];
@@ -85,3 +88,27 @@ async function staleWhileRevalidate(request) {
     .catch(() => cached);
   return cached || network;
 }
+
+self.addEventListener("push", (event) => {
+  event.waitUntil(
+    (async () => {
+      const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      if (windows.some((w) => w.visibilityState === "visible")) return; // the open app shows it
+      await self.registration.showNotification("HopChat", {
+        body: "New encrypted message",
+        tag: "hop-message",
+        icon: "/icon.svg",
+      });
+    })(),
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil(
+    (async () => {
+      const [win] = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      return win ? win.focus() : self.clients.openWindow("/");
+    })(),
+  );
+});

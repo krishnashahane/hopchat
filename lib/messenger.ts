@@ -164,6 +164,11 @@ export class Messenger {
     if (!on) this.emit({ type: "net", online: false });
   }
 
+  /** Signed single-use headers for the relay's authenticated APIs. */
+  signed(scope: "poll" | "ice" | "push"): Record<string, string> {
+    return this.relay.signedHeaders(scope);
+  }
+
   isRelayEnabled(): boolean {
     return this.relay.isEnabled();
   }

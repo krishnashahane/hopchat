@@ -21,6 +21,7 @@ import { relayConfigured, enqueue, drain, waitNext, rateLimit, roomPush, roomRea
 import { ADDR, owner, burn } from "@/lib/server/auth";
 import { NO_STORE, err, logFailure, readCapped, clientIp } from "@/lib/server/http";
 import { verifyRoomWrite } from "@/lib/crypto/room";
+import { wakeLater } from "@/lib/server/push";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
@@ -109,6 +110,7 @@ export async function POST(req: Request) {
     if (!ADDR.test(to)) return err("bad_addr", 400);
     if (packet.length > MAX_PACKET) return err("bad_packet", 400);
     await enqueue(to, packet);
+    wakeLater(to);
     return NextResponse.json({ ok: true }, { headers: NO_STORE });
   } catch (e) {
     logFailure("enqueue", e);

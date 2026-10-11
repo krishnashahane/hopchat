@@ -117,3 +117,20 @@ export async function rateLimit(bucket: string, limit: number, windowSec: number
     return false;
   }
 }
+
+// ── web push subscriptions ──────────────────────────────────────────────────
+
+const PUSH_TTL = 30 * 86_400;
+const pushKey = (addr: string) => `hop:push:${addr}`;
+
+export async function savePushSub(addr: string, sub: string): Promise<void> {
+  await command(["SET", pushKey(addr), sub, "EX", PUSH_TTL]);
+}
+
+export async function loadPushSub(addr: string): Promise<string | null> {
+  return command<string | null>(["GET", pushKey(addr)]);
+}
+
+export async function deletePushSub(addr: string): Promise<void> {
+  await command(["DEL", pushKey(addr)]);
+}

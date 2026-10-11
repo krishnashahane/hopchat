@@ -28,6 +28,7 @@ import { Messenger } from "@/lib/messenger";
 import * as db from "@/lib/storage/db";
 import type { StoredRoom } from "@/lib/storage/db";
 import type { Contact, ChatMessage } from "@/lib/types";
+import { pushSupported, enablePush, disablePush } from "@/lib/push";
 
 type Phase = "loading" | "onboarding" | "unlock" | "ready";
 
@@ -52,6 +53,9 @@ interface AppState {
   netOnline: boolean;
   relayEnabled: boolean;
   setRelayEnabled: (on: boolean) => void;
+  /** Web Push wake-ups; null when this browser can't do push. */
+  pushEnabled: boolean | null;
+  setPushEnabled: (on: boolean) => Promise<void>;
   error: string | null;
   createIdentity: (passphrase?: string) => Promise<void>;
   unlock: (passphrase: string) => Promise<void>;
@@ -134,6 +138,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [peerCount, setPeerCount] = useState(0);
   const [netOnline, setNetOnline] = useState(false);
   const [relayEnabled, setRelayEnabledState] = useState(true);
+  const [pushEnabled, setPushEnabledState] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
   const messengerRef = useRef<Messenger | null>(null);
   const activeRef = useRef<string | null>(null);
@@ -205,6 +210,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     m.setRelayEnabled(pref);
     setRelayEnabledState(pref);
     setNick(store.get("hop.nick") ?? defaultNick(id.address));
+    setPushEnabledState(pushSupported() ? store.get("hop.push") === "1" : null);
     setIdentity(id);
     setPhase("ready");
     void db.purgeExpired();
@@ -233,6 +239,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     messengerRef.current?.setRelayEnabled(on);
     setRelayEnabledState(on);
     store.set("hop.relay", on ? "1" : "0");
+  }, []);
+
+  const setPushEnabled = useCallback(async (on: boolean) => {
+    const m = messengerRef.current;
+    if (!m) return;
+    const sign = () => m.signed("push");
+    if (on) await enablePush(sign);
+    else await disablePush(sign);
+    store.set("hop.push", on ? "1" : "0");
+    setPushEnabledState(on);
   }, []);
 
   useEffect(() => {
@@ -359,7 +375,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [contacts, rooms, nick, notify, refreshActive, pool],
   );
 
+  /** Tell the relay to stop waking a device that is about to forget its identity. */
+  const dropPush = useCallback(() => {
+    const m = messengerRef.current;
+    if (m && store.get("hop.push") === "1") void disablePush(() => m.signed("push"));
+    store.set("hop.push", "0");
+    setPushEnabledState((v) => (v === null ? null : false));
+  }, []);
+
   const reset = useCallback(async () => {
+    dropPush();
     geoPool.current?.close();
     geoPool.current = null;
     identityRef.current = null;
@@ -374,10 +399,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setMessages([]);
     setNotices([]);
     setPhase("onboarding");
-  }, []);
+  }, [dropPush]);
 
   /** Panic: destroy keys, history, caches and preferences, then reload to a blank app. */
   const panic = useCallback(async () => {
+    dropPush();
     geoPool.current?.close();
     geoPool.current = null;
     messengerRef.current?.destroy();
@@ -385,7 +411,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     await db.destroy().catch(() => {});
     await wipeBrowserState();
     window.location.replace("/");
-  }, []);
+  }, [dropPush]);
 
   const runCommand = useCallback(
     async (input: string) => {
@@ -543,6 +569,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     netOnline,
     relayEnabled,
     setRelayEnabled,
+    pushEnabled,
+    setPushEnabled,
     error,
     createIdentity,
     unlock,
