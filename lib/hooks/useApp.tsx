@@ -29,6 +29,7 @@ import * as db from "@/lib/storage/db";
 import type { StoredRoom } from "@/lib/storage/db";
 import type { Contact, ChatMessage } from "@/lib/types";
 import { pushSupported, enablePush, disablePush } from "@/lib/push";
+import { makeBackup, readBackup } from "@/lib/backup";
 
 type Phase = "loading" | "onboarding" | "unlock" | "ready";
 
@@ -59,7 +60,12 @@ interface AppState {
   error: string | null;
   createIdentity: (passphrase?: string) => Promise<void>;
   unlock: (passphrase: string) => Promise<void>;
+  /** Encrypted backup file contents (identity, contacts, rooms). */
+  exportBackup: (passphrase: string) => Promise<string>;
+  /** Restore on a device with no identity; `lock` also requires the passphrase to unlock here. */
+  restoreBackup: (file: string, passphrase: string, lock: boolean) => Promise<void>;
   addContact: (bundle: string, nickname: string) => Promise<Contact>;
+  setVerified: (addr: string, verified: boolean) => Promise<void>;
   selectContact: (addr: string) => Promise<void>;
   deselect: () => void;
   /** Send text, or run it as an IRC-style command when it starts with "/". */
@@ -298,6 +304,37 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [bootMessenger],
   );
 
+  const exportBackup = useCallback(
+    async (passphrase: string) => {
+      if (!identity) throw new Error("no identity");
+      return makeBackup(identity, await db.listContacts(), await db.listRooms(), nick, passphrase);
+    },
+    [identity, nick],
+  );
+
+  const restoreBackup = useCallback(
+    async (file: string, passphrase: string, lock: boolean) => {
+      setError(null);
+      if (await db.loadIdentityRecord()) throw new Error("this device already has an identity");
+      const r = await readBackup(file, passphrase);
+      const dk = newDataKey();
+      const vault = await sealVault(
+        JSON.stringify({ ...serializeSecret(r.identity), dk }),
+        lock ? { passphrase } : { deviceKey: await db.deviceKey() },
+      );
+      db.setDataKey(b64uDecode(dk));
+      for (const c of r.contacts) await db.upsertContact(c);
+      for (const room of r.rooms) await db.saveRoom(room);
+      if (r.nick && NICK.test(r.nick)) store.set("hop.nick", r.nick);
+      // Identity record last: a restore that fails midway leaves the device in onboarding.
+      await db.saveIdentityRecord({ vault, address: r.identity.address, bundle: encodePublicBundle(r.identity.publicKeys) });
+      await bootMessenger(r.identity);
+      // Contacts still hold sessions with the old device; open fresh ones.
+      for (const c of r.contacts) await messengerRef.current?.greet(c);
+    },
+    [bootMessenger],
+  );
+
   const unlock = useCallback(
     async (passphrase: string) => {
       setError(null);
@@ -326,6 +363,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     messengerRef.current?.registerContact(contact);
     setContacts(await db.listContacts());
     return contact;
+  }, []);
+
+  const setVerified = useCallback(async (addr: string, verified: boolean) => {
+    const c = await db.getContact(addr);
+    if (!c) return;
+    const next = { ...c, verified };
+    await db.upsertContact(next);
+    messengerRef.current?.registerContact(next);
+    setContacts(await db.listContacts());
   }, []);
 
   const selectContact = useCallback(async (addr: string) => {
@@ -574,7 +620,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     error,
     createIdentity,
     unlock,
+    exportBackup,
+    restoreBackup,
     addContact,
+    setVerified,
     selectContact,
     deselect,
     submit,

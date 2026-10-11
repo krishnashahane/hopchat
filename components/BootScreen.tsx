@@ -14,7 +14,11 @@ const BOOT_LINES = [
 ];
 
 export function BootScreen() {
-  const { phase, createIdentity, unlock, reset, error } = useApp();
+  const { phase, createIdentity, unlock, reset, error, restoreBackup } = useApp();
+  const [restoreFile, setRestoreFile] = useState<string | null>(null);
+  const [restorePass, setRestorePass] = useState("");
+  const [restoreLock, setRestoreLock] = useState(true);
+  const [restoreErr, setRestoreErr] = useState<string | null>(null);
   const [confirmWipe, setConfirmWipe] = useState(false);
   const [shown, setShown] = useState(0);
   const [passphrase, setPassphrase] = useState("");
@@ -40,6 +44,18 @@ export function BootScreen() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const onRestore = async () => {
+    if (!restoreFile) return;
+    setBusy(true);
+    setRestoreErr(null);
+    try {
+      await restoreBackup(restoreFile, restorePass, restoreLock);
+    } catch (e) {
+      setRestoreErr(e instanceof Error ? e.message : "restore failed");
+    }
+    setBusy(false);
   };
 
   const onUnlock = async () => {
@@ -110,6 +126,41 @@ export function BootScreen() {
             <div style={{ color: "var(--fg-dim)", fontSize: 11, marginTop: 8 }}>
               keys are generated on this device and never leave it.
             </div>
+            <details style={{ marginTop: 14, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+              <summary style={{ cursor: "pointer", fontSize: 12, color: "var(--fg-dim)" }}>restore from a backup file</summary>
+              <div className="flex flex-col gap-2" style={{ marginTop: 10 }}>
+                <input
+                  type="file"
+                  accept="application/json,.json"
+                  aria-label="backup file"
+                  style={{ fontSize: 12 }}
+                  onChange={async (e) => {
+                    const f = e.target.files?.[0];
+                    setRestoreErr(null);
+                    setRestoreFile(f && f.size < 2_000_000 ? await f.text() : null);
+                    if (f && f.size >= 2_000_000) setRestoreErr("that file is too large to be a backup");
+                  }}
+                />
+                <input
+                  className="input"
+                  type="password"
+                  placeholder="backup passphrase"
+                  aria-label="backup passphrase"
+                  value={restorePass}
+                  onChange={(e) => setRestorePass(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && void onRestore()}
+                  autoComplete="current-password"
+                />
+                <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, color: "var(--fg-dim)", cursor: "pointer" }}>
+                  <input type="checkbox" checked={restoreLock} onChange={(e) => setRestoreLock(e.target.checked)} />
+                  also require this passphrase to open the app on this device
+                </label>
+                {restoreErr && <span style={{ color: "var(--danger)", fontSize: 11 }}>{restoreErr}</span>}
+                <button className="btn w-full" disabled={busy || !restoreFile || !restorePass} onClick={onRestore}>
+                  {busy ? "restoring…" : "restore identity"}
+                </button>
+              </div>
+            </details>
           </div>
         )}
 
