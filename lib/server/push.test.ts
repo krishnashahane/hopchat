@@ -1,7 +1,11 @@
 import { describe, it, expect } from "vitest";
+import { createECDH, randomBytes } from "node:crypto";
 import { parseSubscription } from "./push";
 
-const keys = { p256dh: "BNcRdreALRFXTkOOUHK1EtK2wtaz5Ry4YfYCA_0QTpQtUbVlUls0VJXg7A8u-Ts1XbjhazAkj7I99e8QcYP7DkM", auth: "tBHItJI5svbpez7KI4CCXg" };
+// A throwaway P-256 public key + auth secret, shaped like a browser subscription.
+const ecdh = createECDH("prime256v1");
+ecdh.generateKeys();
+const keys = { p256dh: ecdh.getPublicKey("base64url"), auth: randomBytes(16).toString("base64url") };
 
 describe("push subscriptions", () => {
   it("accepts real browser push services", () => {
