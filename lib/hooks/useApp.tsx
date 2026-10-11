@@ -20,7 +20,7 @@ import {
   type Identity,
 } from "@/lib/crypto/identity";
 import { sealVault, openVault, needsPassphrase, needsUpgrade, type SealedVault } from "@/lib/crypto/vault";
-import { deriveRoom, normalizeRoom } from "@/lib/crypto/room";
+import { deriveRoom, normalizeRoom, destForKey } from "@/lib/crypto/room";
 import { b64uEncode, b64uDecode } from "@/lib/crypto/encoding";
 import { HELP, NICK, isCommand, parseCommand } from "@/lib/commands";
 import { GeoRelayPool, GEOHASH, GEO_LEVELS, MAX_GEO_BODY, encodeGeohash, geoKey, geoPubkey, signGeoEvent, type GeoPost } from "@/lib/nostr";
@@ -187,8 +187,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     });
     const joined = await db.listRooms();
     for (const r of joined) {
-      if (isGeo(r.name)) pool().subscribe(r.name.slice(GEO.length));
-      else m.joinRoom(r);
+      if (isGeo(r.name)) {
+        pool().subscribe(r.name.slice(GEO.length));
+        continue;
+      }
+      // Rooms joined before write-authorized destinations: move to the new address.
+      const dest = destForKey(b64uDecode(r.key));
+      if (r.dest !== dest) {
+        r.dest = dest;
+        await db.saveRoom(r);
+      }
+      m.joinRoom(r);
     }
     setRooms(joined);
     setContacts(await db.listContacts());

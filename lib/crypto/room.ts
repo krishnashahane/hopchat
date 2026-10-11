@@ -9,8 +9,14 @@
  * Every post is AES-256-GCM sealed under the room key (AAD = destination) and carries
  * the author's public bundle plus an Ed25519 signature, so a member cannot post under
  * another member's address.
+ *
+ * Write authorization: a room signing key is derived from the room key, and the mesh
+ * destination is a hash of its public half. Each post carries that public key and a
+ * signature over the ciphertext, so the relay can check — without learning the key —
+ * that the poster knows the room key. Outsiders cannot write to a password room.
  */
 import { gcm } from "@noble/ciphers/aes.js";
+import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { argon2Key } from "./vault";
 import { base32Encode, b64uEncode, b64uDecode, utf8, fromUtf8, concatBytes } from "./encoding";
@@ -35,6 +41,10 @@ interface Inner extends RoomPost {
 export interface SealedPost {
   n: string;
   c: string;
+  /** Room write public key (its hash is the destination). */
+  k: string;
+  /** Room-key signature over destination + ciphertext. */
+  w: string;
 }
 
 export function normalizeRoom(raw: string): string | null {
@@ -45,8 +55,30 @@ export function normalizeRoom(raw: string): string | null {
 export async function deriveRoom(name: string, password = ""): Promise<{ key: Uint8Array; dest: string }> {
   const salt = sha256(utf8(`hopchat-room:${name}`)).slice(0, 16);
   const key = await argon2Key(password, salt);
-  const id = sha256(concatBytes(utf8("hopchat-room-id"), key)).slice(0, 15);
-  return { key, dest: `ROOM-${base32Encode(id)}` };
+  return { key, dest: destForKey(key) };
+}
+
+const writeSeed = (key: Uint8Array): Uint8Array => sha256(concatBytes(utf8("hopchat-room-write"), key));
+
+const destForWriter = (pub: Uint8Array): string =>
+  `ROOM-${base32Encode(sha256(concatBytes(utf8("hopchat-room-id-v2"), pub)).slice(0, 15))}`;
+
+/** Mesh/relay destination for a room key. */
+export const destForKey = (key: Uint8Array): string => destForWriter(ed25519.getPublicKey(writeSeed(key)));
+
+const writeTranscript = (dest: string, n: string, c: string): Uint8Array => utf8(`hop-room-w:${dest}:${n}:${c}`);
+
+/** Relay-side check: the poster holds the room key for `dest`. Never throws. */
+export function verifyRoomWrite(dest: string, sealed: unknown): boolean {
+  try {
+    const { n, c, k, w } = sealed as SealedPost;
+    if (typeof n !== "string" || typeof c !== "string" || typeof k !== "string" || typeof w !== "string") return false;
+    const pub = b64uDecode(k);
+    if (pub.length !== 32 || destForWriter(pub) !== dest) return false;
+    return ed25519.verify(b64uDecode(w), writeTranscript(dest, n, c), pub);
+  } catch {
+    return false;
+  }
 }
 
 const transcript = (dest: string, p: RoomPost): Uint8Array =>
@@ -60,7 +92,10 @@ export function sealPost(id: Identity, key: Uint8Array, dest: string, post: Room
   };
   const nonce = crypto.getRandomValues(new Uint8Array(12));
   const ct = gcm(key, nonce, utf8(dest)).encrypt(utf8(JSON.stringify(inner)));
-  return { n: b64uEncode(nonce), c: b64uEncode(ct) };
+  const n = b64uEncode(nonce);
+  const c = b64uEncode(ct);
+  const seed = writeSeed(key);
+  return { n, c, k: b64uEncode(ed25519.getPublicKey(seed)), w: b64uEncode(ed25519.sign(writeTranscript(dest, n, c), seed)) };
 }
 
 /** Decrypt and authenticate a post. Throws on a wrong key, tampering, or a bad signature. */

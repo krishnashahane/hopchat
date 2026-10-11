@@ -9,7 +9,8 @@
  */
 import type { Transport } from "./router";
 import type { MeshPacket } from "@/lib/types";
-import type { Identity } from "@/lib/crypto/identity";
+import type { Identity, PublicBundle } from "@/lib/crypto/identity";
+import { sealSender, openSender, isSealedSender } from "@/lib/crypto/sealed";
 import { encodePublicBundle } from "@/lib/crypto/identity";
 import { signBytes } from "@/lib/crypto/e2e";
 import { utf8, b64uEncode } from "@/lib/crypto/encoding";
@@ -42,6 +43,7 @@ export class RelayTransport implements Transport {
   private readonly urgent: string[] = [];
   private readonly bulk: string[] = [];
   private sending = false;
+  private lookup: (addr: string) => PublicBundle | undefined = () => undefined;
 
   constructor(private readonly identity: Identity) {
     this.selfId = identity.address;
@@ -53,6 +55,29 @@ export class RelayTransport implements Transport {
     const ts = (Date.now() + this.clockOffset).toString();
     const sig = b64uEncode(signBytes(this.identity, utf8(`hop-poll:${this.selfId}:${ts}`)));
     return { "x-hop-addr": this.selfId, "x-hop-ts": ts, "x-hop-sig": sig, "x-hop-bundle": this.bundle };
+  }
+
+  /** Resolve a recipient's keys so direct packets can be sealed-sender wrapped. */
+  setRecipientLookup(fn: (addr: string) => PublicBundle | undefined): void {
+    this.lookup = fn;
+  }
+
+  /**
+   * What the relay stores. Direct packets to a known contact are wrapped so the relay
+   * learns only the destination; room posts drop the sender hint (authorship is signed
+   * inside the sealed post). Packets forwarded for strangers go as they came.
+   */
+  private wireText(packet: MeshPacket): string {
+    if (packet.kind === "room") return JSON.stringify({ ...packet, from: "-" });
+    const text = JSON.stringify(packet);
+    const peer = this.lookup(packet.to);
+    return peer ? JSON.stringify(sealSender(packet.to, peer.kex, text)) : text;
+  }
+
+  /** Parse what the relay delivered, unwrapping sealed-sender boxes addressed to us. */
+  private fromWire(raw: string): MeshPacket {
+    const v = JSON.parse(raw) as unknown;
+    return (isSealedSender(v) ? JSON.parse(openSender(this.identity, v)) : v) as MeshPacket;
   }
 
   /** Follow these rooms' relay logs (in addition to our private inbox). */
@@ -81,7 +106,7 @@ export class RelayTransport implements Transport {
         this.rooms.set(dest, head < after ? 0 : Math.max(after, ...packets.map((x) => x.s)));
         for (const { p } of packets) {
           try {
-            this.handler?.(JSON.parse(p) as MeshPacket, this.name);
+            this.handler?.(this.fromWire(p), this.name);
           } catch {
             /* skip malformed */
           }
@@ -150,7 +175,7 @@ export class RelayTransport implements Transport {
         const { packets } = (await res.json()) as { packets: string[] };
         for (const raw of packets ?? []) {
           try {
-            this.handler?.(JSON.parse(raw) as MeshPacket, this.name);
+            this.handler?.(this.fromWire(raw), this.name);
           } catch {
             /* skip malformed */
           }
@@ -174,7 +199,7 @@ export class RelayTransport implements Transport {
 
   broadcast(packet: MeshPacket): void {
     if (!this.enabled || typeof window === "undefined") return;
-    const body = JSON.stringify({ to: packet.to, packet: JSON.stringify(packet) });
+    const body = JSON.stringify({ to: packet.to, packet: this.wireText(packet) });
     (body.length > BULK_BYTES ? this.bulk : this.urgent).push(body);
     if (!this.sending) void this.drainSends();
   }

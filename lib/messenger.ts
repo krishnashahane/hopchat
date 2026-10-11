@@ -101,6 +101,10 @@ export class Messenger {
     this.relay = new RelayTransport(identity);
     this.webrtc.onStatusChange(() => this.emit({ type: "peers", count: this.peerCount() }));
     this.relay.onStatusChange((online) => this.emit({ type: "net", online }));
+    this.relay.setRecipientLookup((addr) => {
+      const c = this.contacts.get(addr);
+      return c ? decodePublicBundle(c.bundle) : undefined;
+    });
     this.router.addTransport(this.localbus);
     this.router.addTransport(this.webrtc);
     this.router.addTransport(this.relay);

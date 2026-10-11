@@ -12,7 +12,8 @@
  *     `hop-poll:{addr}:{ts}` with the identity key whose public bundle hashes to that
  *     address. Each signature is accepted once (replay guard) and travels in headers,
  *     never the URL, so it does not land in access logs.
- *   - Room ids are hashes of Argon2id-derived keys; the relay learns no names/passwords.
+ *   - Room ids are hashes of keys derived from Argon2id room keys; the relay learns no
+ *     names/passwords, yet checks each post is signed by a room-key holder.
  *   - Every verb is rate-limited and size-capped.
  */
 import { NextResponse } from "next/server";
@@ -29,6 +30,7 @@ import {
 import { decodePublicBundle, deriveAddress } from "@/lib/crypto/identity";
 import { verifyBytes } from "@/lib/crypto/e2e";
 import { utf8, b64uDecode } from "@/lib/crypto/encoding";
+import { verifyRoomWrite } from "@/lib/crypto/room";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
@@ -36,7 +38,7 @@ export const maxDuration = 30;
 const ADDR = /^HOP-[0-9A-Z-]{4,64}$/;
 const ROOM = /^ROOM-[0-9A-Z]{24}$/;
 const MAX_PACKET = 64 * 1024;
-const MAX_ROOM_PACKET = 8 * 1024;
+const MAX_ROOM_PACKET = 16 * 1024; // 2,000 chars of 3-byte UTF-8 + author bundle, base64
 const CLOCK_SKEW_MS = 60_000;
 const NO_STORE = { "cache-control": "no-store" };
 
@@ -78,6 +80,16 @@ function verifyOwnership(addr: string, ts: string, sig: string, bundle: string):
     const pub = decodePublicBundle(bundle);
     if (deriveAddress(pub) !== addr) return false;
     return verifyBytes(pub.sign, utf8(`hop-poll:${addr}:${ts}`), b64uDecode(sig));
+  } catch {
+    return false;
+  }
+}
+
+/** A room post must name this room and be signed with its room-derived write key. */
+function roomWriteOk(room: string, packet: string): boolean {
+  try {
+    const p = JSON.parse(packet) as { to?: unknown; kind?: unknown; payload?: unknown };
+    return p.to === room && p.kind === "room" && verifyRoomWrite(room, p.payload);
   } catch {
     return false;
   }
@@ -151,6 +163,7 @@ export async function POST(req: Request) {
   try {
     if (ROOM.test(to)) {
       if (packet.length > MAX_ROOM_PACKET) return err("bad_packet", 400);
+      if (!roomWriteOk(to, packet)) return err("forbidden", 403);
       return NextResponse.json({ ok: true, s: await roomPush(to, packet) }, { headers: NO_STORE });
     }
     if (!ADDR.test(to)) return err("bad_addr", 400);
