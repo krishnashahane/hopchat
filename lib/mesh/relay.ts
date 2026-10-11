@@ -51,9 +51,9 @@ export class RelayTransport implements Transport {
   }
 
   /** Signed, single-use headers proving ownership of our address (kept out of URLs/logs). */
-  private pollHeaders(): Record<string, string> {
+  signedHeaders(scope: "poll" | "ice" | "push" = "poll"): Record<string, string> {
     const ts = (Date.now() + this.clockOffset).toString();
-    const sig = b64uEncode(signBytes(this.identity, utf8(`hop-poll:${this.selfId}:${ts}`)));
+    const sig = b64uEncode(signBytes(this.identity, utf8(`hop-${scope}:${this.selfId}:${ts}`)));
     return { "x-hop-addr": this.selfId, "x-hop-ts": ts, "x-hop-sig": sig, "x-hop-bundle": this.bundle };
   }
 
@@ -159,7 +159,7 @@ export class RelayTransport implements Transport {
       this.abort = new AbortController();
       try {
         const res = await fetch("/api/relay", {
-          headers: this.pollHeaders(),
+          headers: this.signedHeaders(),
           signal: this.abort.signal,
           cache: "no-store",
         });

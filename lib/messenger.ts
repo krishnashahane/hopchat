@@ -15,7 +15,7 @@ import { MeshRouter, MAX_HOPS } from "@/lib/mesh/router";
 import { sealPost, openPost, MAX_ROOM_BODY, type SealedPost } from "@/lib/crypto/room";
 import { b64uDecode } from "@/lib/crypto/encoding";
 import { LocalBusTransport } from "@/lib/mesh/localbus";
-import { WebRTCMeshTransport } from "@/lib/mesh/webrtc";
+import { WebRTCMeshTransport, DEFAULT_ICE } from "@/lib/mesh/webrtc";
 import { RelayTransport } from "@/lib/mesh/relay";
 import type { Contact, ChatMessage, MeshPacket } from "@/lib/types";
 import * as db from "@/lib/storage/db";
@@ -97,8 +97,8 @@ export class Messenger {
   constructor(private readonly identity: Identity) {
     this.router = new MeshRouter({ selfId: identity.address, defaultTtl: MAX_HOPS });
     this.localbus = new LocalBusTransport(identity.address);
-    this.webrtc = new WebRTCMeshTransport();
     this.relay = new RelayTransport(identity);
+    this.webrtc = new WebRTCMeshTransport(() => this.iceServers());
     this.webrtc.onStatusChange(() => this.emit({ type: "peers", count: this.peerCount() }));
     this.relay.onStatusChange((online) => this.emit({ type: "net", online }));
     this.relay.setRecipientLookup((addr) => {
@@ -135,6 +135,23 @@ export class Messenger {
 
   private emit(e: MessengerEvent): void {
     for (const l of this.listeners) l(e);
+  }
+
+  private ice: { servers: RTCIceServer[]; until: number } | null = null;
+
+  /** STUN, plus TURN from the server when the relay is on (cached until it nears expiry). */
+  private async iceServers(): Promise<RTCIceServer[]> {
+    if (!this.relay.isEnabled()) return DEFAULT_ICE;
+    if (this.ice && Date.now() < this.ice.until) return this.ice.servers;
+    try {
+      const res = await fetch("/api/ice", { headers: this.relay.signedHeaders("ice"), cache: "no-store" });
+      if (!res.ok) return DEFAULT_ICE;
+      const { iceServers, ttl } = (await res.json()) as { iceServers: RTCIceServer[]; ttl: number };
+      this.ice = { servers: iceServers, until: Date.now() + Math.max(0, ttl - 600) * 1000 };
+      return iceServers;
+    } catch {
+      return DEFAULT_ICE;
+    }
   }
 
   peerCount(): number {

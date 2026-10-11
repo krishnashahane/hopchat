@@ -10,15 +10,23 @@ import type { Transport } from "./router";
 import type { MeshPacket } from "@/lib/types";
 import { b64uEncode, b64uDecode } from "@/lib/crypto/encoding";
 
-const ICE_SERVERS: RTCIceServer[] = [
+export const DEFAULT_ICE: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
 ];
+
+/** Pause sending above this much buffered data; resume when it drains below LOW. */
+const HIGH_WATER = 1024 * 1024;
+const LOW_WATER = 256 * 1024;
+/** Per-peer backlog cap while the channel is congested (a full 8 MB file fits). */
+const MAX_BACKLOG = 16 * 1024 * 1024;
 
 type PeerState = {
   pc: RTCPeerConnection;
   dc: RTCDataChannel | null;
   id: string;
+  backlog: string[];
+  backlogBytes: number;
 };
 
 interface InvitePayload {
@@ -39,6 +47,9 @@ export class WebRTCMeshTransport implements Transport {
   private readonly peersMap = new Map<string, PeerState>();
   private onStatus: ((connected: number) => void) | null = null;
 
+  /** `ice` supplies STUN/TURN servers per connection (TURN credentials expire). */
+  constructor(private readonly ice: () => Promise<RTCIceServer[]> = async () => DEFAULT_ICE) {}
+
   onPacket(cb: (p: MeshPacket, via: string) => void): void {
     this.handler = cb;
   }
@@ -47,13 +58,14 @@ export class WebRTCMeshTransport implements Transport {
     this.onStatus = cb;
   }
 
-  private newPeerConnection(id: string): PeerState {
+  private async newPeerConnection(id: string): Promise<PeerState> {
+    const iceServers = await this.ice().catch(() => DEFAULT_ICE);
     // Re-running an invite for the same peer replaces, not leaks, the old connection.
     const prev = this.peersMap.get(id);
     prev?.dc?.close();
     prev?.pc.close();
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-    const state: PeerState = { pc, dc: null, id };
+    const pc = new RTCPeerConnection({ iceServers });
+    const state: PeerState = { pc, dc: null, id, backlog: [], backlogBytes: 0 };
     this.peersMap.set(id, state);
 
     pc.onconnectionstatechange = () => {
@@ -71,6 +83,8 @@ export class WebRTCMeshTransport implements Transport {
   private attachChannel(state: PeerState, dc: RTCDataChannel): void {
     state.dc = dc;
     dc.binaryType = "arraybuffer";
+    dc.bufferedAmountLowThreshold = LOW_WATER;
+    dc.onbufferedamountlow = () => this.flush(state);
     dc.onmessage = (ev) => {
       try {
         const packet = JSON.parse(ev.data as string) as MeshPacket;
@@ -101,7 +115,7 @@ export class WebRTCMeshTransport implements Transport {
 
   /** Step 1 (initiator): create an invite code to hand to a peer. */
   async createInvite(peerId: string): Promise<string> {
-    const state = this.newPeerConnection(peerId);
+    const state = await this.newPeerConnection(peerId);
     const dc = state.pc.createDataChannel("hopmesh", { ordered: true });
     this.attachChannel(state, dc);
     const offer = await state.pc.createOffer();
@@ -114,7 +128,7 @@ export class WebRTCMeshTransport implements Transport {
   async acceptInvite(peerId: string, code: string): Promise<string> {
     const payload = decodeInvite(code);
     if (payload.t !== "offer") throw new Error("Expected an offer invite");
-    const state = this.newPeerConnection(peerId);
+    const state = await this.newPeerConnection(peerId);
     await state.pc.setRemoteDescription({ type: "offer", sdp: payload.sdp });
     const answer = await state.pc.createAnswer();
     await state.pc.setLocalDescription(answer);
@@ -134,12 +148,25 @@ export class WebRTCMeshTransport implements Transport {
   broadcast(packet: MeshPacket): void {
     const data = JSON.stringify(packet);
     for (const state of this.peersMap.values()) {
-      if (state.dc && state.dc.readyState === "open") {
-        try {
-          state.dc.send(data);
-        } catch {
-          /* drop on backpressure/close; mesh reroutes */
-        }
+      if (state.dc?.readyState !== "open") continue;
+      // Queue rather than overflow the channel buffer (send() throws past ~16 MB,
+      // which used to drop file chunks); oldest data is kept, the newest dropped.
+      if (state.backlogBytes + data.length > MAX_BACKLOG) continue;
+      state.backlog.push(data);
+      state.backlogBytes += data.length;
+      this.flush(state);
+    }
+  }
+
+  private flush(state: PeerState): void {
+    const dc = state.dc;
+    while (dc?.readyState === "open" && state.backlog.length > 0 && dc.bufferedAmount < HIGH_WATER) {
+      const data = state.backlog.shift()!;
+      state.backlogBytes -= data.length;
+      try {
+        dc.send(data);
+      } catch {
+        /* channel closed mid-flush; mesh reroutes */
       }
     }
   }
