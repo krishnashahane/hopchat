@@ -134,3 +134,7 @@ export async function loadPushSub(addr: string): Promise<string | null> {
 export async function deletePushSub(addr: string): Promise<void> {
   await command(["DEL", pushKey(addr)]);
 }
+
+export async function ping(): Promise<boolean> {
+  return (await command<string>(["PING"])) === "PONG";
+}

@@ -39,15 +39,15 @@ threats → mitigations → residual-risk shape. Read alongside `SECURITY.md` an
 | T10 | Exhaust memory via skipped-key flood | AD2 | Skipped keys bounded to 256; oversized skips rejected | ✅ |
 | T11 | Web injection (XSS) exfiltrating keys | AD1 | Strict CSP (`default-src 'self'`, `object-src 'none'`), no third-party origins, no inline script beyond framework, React auto-escaping | ✅ |
 | T12 | Clickjacking / framing | AD1 | `frame-ancestors 'none'`, `X-Frame-Options: DENY` | ✅ |
-| T13 | Traffic-analysis of the social graph | AD1, AD2 | Content protected; `to`/`from` hints are cleartext — **partial** | ⚠️ |
+| T13 | Traffic-analysis of the social graph | AD1, AD2 | Relay: sealed sender (only `to` visible, 1 KiB padding), room posts carry no sender hint; mesh peers still see `to`/`from`; relay sees client IPs and timing — **partial** | ⚠️ |
 | T14 | Availability / mesh DoS (flooding) | AD2 | TTL + dedup bound propagation; not eliminated | ⚠️ |
 
 ## STRIDE summary
 
 | STRIDE | Where it bites HopChat | Control |
 |---|---|---|
-| **S**poofing | Fake sender / room author; draining someone's relay inbox | Address = hash of key bundle; Double Ratchet session from authenticated handshake; room posts Ed25519-signed; relay drain needs a fresh, single-use signature |
-| **T**ampering | Altered packets on a hop or at the relay | AES-256-GCM everywhere (room AAD = destination); router validates shape, TTL, timestamp |
+| **S**poofing | Fake sender / room author; draining someone's relay inbox; posting to a password room | Address = hash of key bundle; Double Ratchet session from authenticated handshake; room posts Ed25519-signed by author *and* by a room-key-derived write key the relay verifies; relay APIs need a fresh, single-use, scope-bound signature; safety numbers for out-of-band verification |
+| **T**ampering | Altered or forged packets on a hop or at the relay | AES-256-GCM everywhere (room AAD = destination); ratchet decrypt is all-or-nothing, so forged packets cannot desync a session; handshake replays are remembered and ignored; router validates shape, TTL, timestamp |
 | **R**epudiation | — (deniable by design for 1:1; room posts are signed) | Not a goal; no server logs of content |
 | **I**nformation disclosure | Ciphertext at relays, data on disk, auth in URLs | E2E only; vault sealed with Argon2id or non-extractable WebCrypto key; messages/sessions/contacts/room keys sealed at rest; relay auth in headers, never URLs; SW never caches `/api/*` |
 | **D**enial of service | Mesh flood, relay spam, file-transfer memory | 7-hop cap + dedup + replay window; relay rate limits and size caps; ≤8 pending transfers, chunk size checked |
@@ -63,9 +63,10 @@ weak password from captured ciphertext.
 
 ## Residual risk (explicitly out of scope for v1)
 
-- **Metadata privacy (T13).** Routing hints reveal sender/recipient to relays.
-  Roadmap: sealed-sender (encrypt `from`), constant-rate cover traffic, and address
-  rotation for unlinkability.
+- **Metadata privacy (T13).** The internet relay sees only the recipient (sealed sender),
+  plus client IPs and timing; direct mesh peers still see `to`/`from`. Push wake-ups reveal
+  timing to the browser's push service (opt-in). Roadmap: cover traffic, address rotation,
+  onion routing in the native client.
 - **Malicious endpoint (AD5).** An unlocked, malware-infected device is game over for
   that device's messages — inherent to any messenger. Roadmap: secure-enclave /
   platform-keystore binding so keys are non-exportable, biometric unlock.

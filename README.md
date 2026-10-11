@@ -27,7 +27,11 @@ Direct transports planned. Relays only ever see opaque ciphertext.
 - **Multi-hop mesh** — packets are relayed peer-to-peer up to **7 hops**, deduplicated and replay-checked.
 - **End-to-end encryption** — 1:1 chats use a post-quantum handshake + Double Ratchet; relays only see ciphertext.
 - **IRC-style commands** — `/join #room [password]`, `/leave`, `/msg`, `/nick`, `/who`, `/clear`, `/panic`, `/help`.
-- **Password-protected rooms** — room key = Argon2id(password, name); posts are signed by their author.
+- **Password-protected rooms** — room key = Argon2id(password, name); posts are signed by their author,
+  and the relay only accepts posts signed with a key derived from the room key.
+- **Safety numbers** — compare a 60-digit number with a contact to prove nobody swapped keys.
+- **Encrypted backup** — move your identity, contacts and rooms to a new device (Argon2id-sealed file).
+- **Notifications (opt-in)** — empty Web Push wake-ups when a message waits on the relay; no content or sender.
 - **Panic mode** — tap the HOPCHAT logo 3 times to wipe keys, contacts, messages and caches instantly.
 - **Location channels (optional)** — `/geo city` (or `/geo <geohash>`) joins a public, bitchat-compatible
   channel for your area over Nostr. Needs internet; posts are public; each area uses an unlinkable key.
@@ -64,7 +68,9 @@ uniform interface:
 - **WebRTC** — direct P2P links, serverless invite-code (offer/answer) handshake.
 - **Local bus** — instant same-origin/same-device mesh via `BroadcastChannel`.
 - **Internet relay** — store-and-forward of sealed packets (Upstash Redis, 24 h retention); user can switch it off.
-  Sends are paced and retried; inbox polls are signed by the identity key and corrected for device clock skew.
+  Sealed sender: the relay sees only the recipient. Sends are paced and retried; inbox polls are signed by
+  the identity key and corrected for device clock skew.
+- **TURN (optional)** — `/api/ice` hands out short-lived TURN credentials so WebRTC links work behind strict NAT.
 - *(native client)* Bluetooth LE. *(roadmap)* Wi-Fi Direct, Wi-Fi Aware.
 
 Because payloads are end-to-end sealed, any peer can relay without learning content.
@@ -92,9 +98,20 @@ npx vitest run lib/server/relay.int.test.ts   # live relay test; creates short-l
 
 ## Deploy
 
-Vercel project `hopchat`, domain `hopchat.in` (`www` → apex 308). Required env:
-`KV_REST_API_URL`, `KV_REST_API_TOKEN` (or `UPSTASH_REDIS_REST_URL` / `_TOKEN`).
-CI runs secret scan, typecheck, tests, build and `npm audit`; uptime and ZAP workflows probe the live site.
+Vercel project `hopchat`, domain `hopchat.in` (`www` → apex 308).
+
+| Env | Needed for |
+|---|---|
+| `KV_REST_API_URL`, `KV_REST_API_TOKEN` (or `UPSTASH_REDIS_REST_*`) | relay, rate limits, push and TURN APIs |
+| `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | notifications (`npx web-push generate-vapid-keys`) |
+| `TURN_URLS` + `TURN_SECRET` (coturn REST) or `TURN_USERNAME`/`TURN_CREDENTIAL` | TURN relay for WebRTC |
+
+Everything optional degrades cleanly: without Redis the app is local/WebRTC-only, without VAPID the
+notification toggle reports it's unavailable, without TURN links use STUN only.
+`GET /api/health` reports `{ ok, relay, turn, push }` (booleans only).
+
+CI runs secret scan, typecheck, tests, build and `npm audit`; uptime (incl. `/api/health`) and ZAP
+workflows probe the live site.
 
 ## Limits
 
@@ -104,7 +121,8 @@ CI runs secret scan, typecheck, tests, build and `npm audit`; uptime and ZAP wor
 | File | 8 MB, 16 KB chunks |
 | Relay inbox | 600 packets, 24 h |
 | Relay sends | 300/min per IP, 600/min per destination |
-| Direct WebRTC | STUN only, no TURN: links across symmetric NAT fail; the relay covers them |
+| Direct WebRTC | STUN, plus TURN when configured; 1 MB send buffer, 16 MB backlog per peer |
+| Relay APIs | single-use signatures, ±60 s clock window (server clock adopted on mismatch) |
 
 ## Project layout
 
@@ -112,7 +130,8 @@ CI runs secret scan, typecheck, tests, build and `npm audit`; uptime and ZAP wor
 app/                 Next.js App Router (client-only UI shell)
 components/           Hacker-terminal UI (boot, sidebar, chat, modals)
 lib/crypto/          identity · e2e (hybrid PQC) · vault · encoding
-lib/mesh/            router · webrtc · localbus transports
+lib/mesh/            router · webrtc · localbus · relay transports
+lib/server/          relay API: Redis, auth (signed headers), ICE/TURN, push, HTTP helpers
 lib/storage/         IndexedDB local-first persistence
 lib/messenger.ts     application service (seal → route → open)
 lib/hooks/useApp.tsx React state/context
@@ -121,6 +140,7 @@ lib/hooks/useApp.tsx React state/context
 ## Security posture
 
 - Strict Content-Security-Policy, HSTS, `frame-ancestors 'none'`, `Referrer-Policy: no-referrer`, no telemetry.
+- Ratchet decryption is all-or-nothing: forged or replayed packets cannot break a conversation.
 - No secrets in the repo; identity keys never leave the device.
 - Dependencies pinned; `npm audit` clean (0 vulnerabilities).
 
