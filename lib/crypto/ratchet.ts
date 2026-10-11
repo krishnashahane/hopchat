@@ -133,7 +133,34 @@ export class DoubleRatchet {
     return { header, ct: b64uEncode(ct), nonce: b64uEncode(nonce) };
   }
 
+  /**
+   * All-or-nothing: a message that fails to authenticate leaves the session exactly
+   * as it was. Otherwise anyone who can forge a routing hint could push a bogus DH
+   * header through the ratchet and break the conversation for good.
+   */
   decrypt(msg: RatchetMessage): Uint8Array {
+    const snapshot = this.serialize();
+    try {
+      return this.decryptUnsafe(msg);
+    } catch (e) {
+      this.restore(DoubleRatchet.deserialize(snapshot));
+      throw e;
+    }
+  }
+
+  private restore(r: DoubleRatchet): void {
+    this.dhs = r.dhs;
+    this.dhr = r.dhr;
+    this.rk = r.rk;
+    this.cks = r.cks;
+    this.ckr = r.ckr;
+    this.ns = r.ns;
+    this.nr = r.nr;
+    this.pn = r.pn;
+    this.skipped = r.skipped;
+  }
+
+  private decryptUnsafe(msg: RatchetMessage): Uint8Array {
     const skippedPt = this.trySkipped(msg);
     if (skippedPt) return skippedPt;
 

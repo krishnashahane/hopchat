@@ -8,7 +8,7 @@ import type { MeshPacket } from "@/lib/types";
 
 export class LocalBusTransport implements Transport {
   readonly name = "localbus";
-  private readonly channel: BroadcastChannel | null;
+  private channel: BroadcastChannel | null;
   private handler: ((p: MeshPacket, via: string) => void) | null = null;
   private readonly peerIds = new Set<string>();
 
@@ -26,7 +26,8 @@ export class LocalBusTransport implements Transport {
     if (data && typeof data === "object" && "__hop" in data) {
       const ctrl = data as { __hop: string; id: string };
       if (ctrl.id && ctrl.id !== this.selfId) {
-        this.peerIds.add(ctrl.id);
+        if (ctrl.__hop === "bye") this.peerIds.delete(ctrl.id);
+        else this.peerIds.add(ctrl.id);
         if (ctrl.__hop === "hello") this.channel?.postMessage({ __hop: "ack", id: this.selfId });
       }
       return;
@@ -49,5 +50,6 @@ export class LocalBusTransport implements Transport {
   close(): void {
     this.channel?.postMessage({ __hop: "bye", id: this.selfId });
     this.channel?.close();
+    this.channel = null;
   }
 }

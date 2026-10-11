@@ -22,6 +22,7 @@ export interface StoredSession {
   ratchet: SerializedRatchet;
   /** Pending handshake offer JSON, retransmitted until established (initiator only). */
   offer?: string;
+  seenEk?: string[];
 }
 
 export interface StoredRoom {
