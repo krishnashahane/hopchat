@@ -130,7 +130,9 @@ export async function POST(req: Request) {
   if (!relayConfigured) return err("relay_unconfigured", 503);
   if (!(req.headers.get("content-type") ?? "").startsWith("application/json")) return err("bad_type", 415);
   if (Number(req.headers.get("content-length") ?? 0) > MAX_PACKET + 1024) return err("too_large", 413);
-  if (!(await rateLimit(`send:${clientIp(req)}`, 120, 60))) return err("rate_limited", 429);
+  // Per IP (carrier NAT puts many users behind one address) and per destination
+  // (caps how fast anyone can fill one inbox or room log).
+  if (!(await rateLimit(`send:${clientIp(req)}`, 300, 60))) return err("rate_limited", 429);
 
   const raw = await readCapped(req, MAX_PACKET + 1024);
   if (raw === null) return err("too_large", 413);
@@ -143,6 +145,8 @@ export async function POST(req: Request) {
   if (!body || typeof body !== "object") return err("bad_json", 400);
   const { to, packet } = body;
   if (typeof to !== "string" || typeof packet !== "string") return err("bad_request", 400);
+  if (!ROOM.test(to) && !ADDR.test(to)) return err("bad_addr", 400);
+  if (!(await rateLimit(`dest:${to}`, 600, 60))) return err("rate_limited", 429);
 
   try {
     if (ROOM.test(to)) {

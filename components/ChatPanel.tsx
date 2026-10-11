@@ -190,8 +190,8 @@ export function ChatPanel() {
     setFileErr(null);
     try {
       await sendFile(file);
-    } catch {
-      setFileErr("File too large (max 8 MB).");
+    } catch (err) {
+      setFileErr(err instanceof Error ? err.message : "Could not send file.");
     }
   };
 

@@ -14,6 +14,12 @@ import { encodePublicBundle } from "@/lib/crypto/identity";
 import { signBytes } from "@/lib/crypto/e2e";
 import { utf8, b64uEncode } from "@/lib/crypto/encoding";
 
+/** Stay under the server's per-IP send budget (300/min) with headroom for NAT neighbours. */
+const SEND_GAP_MS = 250;
+const SEND_TRIES = 4;
+/** Packets above this size (file chunks) yield to chat text, acks and handshakes. */
+const BULK_BYTES = 4 * 1024;
+
 export class RelayTransport implements Transport {
   readonly name = "relay";
   private handler: ((p: MeshPacket, via: string) => void) | null = null;
@@ -30,6 +36,12 @@ export class RelayTransport implements Transport {
   /** Bumped whenever the room loop restarts so a stale in-flight loop exits. */
   private roomGen = 0;
   private roomLoopActive = false;
+  /** Server clock minus ours, learned from a rejected poll, so a wrong device clock can't lock us out. */
+  private clockOffset = 0;
+  /** Sends are serialized: the inbox keeps arrival order and the rate limit isn't burst through. */
+  private readonly urgent: string[] = [];
+  private readonly bulk: string[] = [];
+  private sending = false;
 
   constructor(private readonly identity: Identity) {
     this.selfId = identity.address;
@@ -38,7 +50,7 @@ export class RelayTransport implements Transport {
 
   /** Signed, single-use headers proving ownership of our address (kept out of URLs/logs). */
   private pollHeaders(): Record<string, string> {
-    const ts = Date.now().toString();
+    const ts = (Date.now() + this.clockOffset).toString();
     const sig = b64uEncode(signBytes(this.identity, utf8(`hop-poll:${this.selfId}:${ts}`)));
     return { "x-hop-addr": this.selfId, "x-hop-ts": ts, "x-hop-sig": sig, "x-hop-bundle": this.bundle };
   }
@@ -132,6 +144,7 @@ export class RelayTransport implements Transport {
           await this.sleep(30_000);
           continue;
         }
+        if (res.status === 401) this.syncClock(res);
         if (!res.ok) throw new Error(`relay ${res.status}`);
         this.setOnline(true);
         const { packets } = (await res.json()) as { packets: string[] };
@@ -150,21 +163,48 @@ export class RelayTransport implements Transport {
     }
   }
 
+  private syncClock(res: Response): void {
+    const server = Date.parse(res.headers.get("date") ?? "");
+    if (Number.isFinite(server)) this.clockOffset = server - Date.now();
+  }
+
   private sleep(ms: number): Promise<void> {
     return new Promise((r) => setTimeout(r, ms));
   }
 
   broadcast(packet: MeshPacket): void {
     if (!this.enabled || typeof window === "undefined") return;
-    void fetch("/api/relay", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      // No `keepalive`: browsers cap in-flight keepalive bodies at 64 KB total,
-      // which silently dropped file chunks.
-      body: JSON.stringify({ to: packet.to, packet: JSON.stringify(packet) }),
-    }).catch(() => {
-      /* delivery retried by the app/mesh; never throw into the router */
-    });
+    const body = JSON.stringify({ to: packet.to, packet: JSON.stringify(packet) });
+    (body.length > BULK_BYTES ? this.bulk : this.urgent).push(body);
+    if (!this.sending) void this.drainSends();
+  }
+
+  private async drainSends(): Promise<void> {
+    this.sending = true;
+    try {
+      for (let body = this.urgent.shift() ?? this.bulk.shift(); body; body = this.urgent.shift() ?? this.bulk.shift()) {
+        if (!this.enabled) break;
+        await this.post(body);
+        await this.sleep(SEND_GAP_MS);
+      }
+    } finally {
+      this.sending = false;
+    }
+  }
+
+  /** POST one packet, retrying rate limits and transient failures; never throws into the router. */
+  private async post(body: string): Promise<void> {
+    for (let attempt = 1; attempt <= SEND_TRIES; attempt++) {
+      try {
+        // No `keepalive`: browsers cap in-flight keepalive bodies at 64 KB total,
+        // which silently dropped file chunks.
+        const res = await fetch("/api/relay", { method: "POST", headers: { "Content-Type": "application/json" }, body });
+        if (res.ok || (res.status >= 400 && res.status < 500 && res.status !== 429)) return;
+      } catch {
+        /* offline — retry below */
+      }
+      if (attempt < SEND_TRIES) await this.sleep(1_000 * 2 ** attempt);
+    }
   }
 
   isOnline(): boolean {
@@ -178,6 +218,7 @@ export class RelayTransport implements Transport {
 
   close(): void {
     this.running = false;
+    this.urgent.length = this.bulk.length = 0;
     this.abort?.abort();
     if (this.roomTimer) clearTimeout(this.roomTimer);
     this.roomTimer = null;

@@ -492,11 +492,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     async (input: string, selfDestructMs?: number) => {
       const text = input.trim();
       if (!text) return;
-      if (isCommand(text)) return runCommand(text);
-      const target = activeRef.current;
-      if (!target) return notify("pick a conversation, or type /help", "error");
-      // "//text" escapes a leading slash.
-      await deliver(target, text.startsWith("//") ? text.slice(1) : text, selfDestructMs);
+      try {
+        if (isCommand(text)) return await runCommand(text);
+        const target = activeRef.current;
+        if (!target) return notify("pick a conversation, or type /help", "error");
+        // "//text" escapes a leading slash.
+        await deliver(target, text.startsWith("//") ? text.slice(1) : text, selfDestructMs);
+      } catch (e) {
+        notify(e instanceof Error ? e.message : "could not send", "error");
+      }
     },
     [runCommand, deliver, notify],
   );

@@ -48,13 +48,19 @@ export class WebRTCMeshTransport implements Transport {
   }
 
   private newPeerConnection(id: string): PeerState {
+    // Re-running an invite for the same peer replaces, not leaks, the old connection.
+    const prev = this.peersMap.get(id);
+    prev?.dc?.close();
+    prev?.pc.close();
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     const state: PeerState = { pc, dc: null, id };
     this.peersMap.set(id, state);
 
     pc.onconnectionstatechange = () => {
-      if (["failed", "closed", "disconnected"].includes(pc.connectionState)) {
+      // "disconnected" is often transient (network switch) and ICE recovers on its own.
+      if ((pc.connectionState === "failed" || pc.connectionState === "closed") && this.peersMap.get(id) === state) {
         this.peersMap.delete(id);
+        pc.close();
       }
       this.emitStatus();
     };

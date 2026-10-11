@@ -38,7 +38,7 @@ async function pipeline<T = unknown>(cmds: Cmd[]): Promise<T[]> {
 }
 
 const INBOX_TTL = 86_400; // ciphertext expires after 24h if never collected
-const MAX_QUEUE = 500; // cap per-recipient backlog
+const MAX_QUEUE = 600; // cap per-recipient backlog; fits one max-size (8 MB) file transfer
 
 function inboxKey(addr: string): string {
   return `hop:inbox:${addr}`;

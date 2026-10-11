@@ -305,6 +305,11 @@ export async function addMessage(m: ChatMessage): Promise<void> {
   await db.put("messages", row);
 }
 
+export async function hasMessage(id: string): Promise<boolean> {
+  const db = await getDB();
+  return (await db.getKey("messages", id)) !== undefined;
+}
+
 export async function updateMessage(m: ChatMessage): Promise<void> {
   await addMessage(m);
 }

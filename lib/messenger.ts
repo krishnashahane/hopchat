@@ -33,6 +33,18 @@ import {
 /** Incoming files keep their type only if it is a raster image; all else downloads as bytes. */
 const SAFE_IMAGE = /^image\/(png|jpeg|gif|webp|avif|bmp)$/;
 const MAX_PENDING_TRANSFERS = 8;
+/** Keeps a sealed message well under the relay's 64 KB packet cap, even for 4-byte UTF-8. */
+export const MAX_BODY = 8_000;
+/** Peer-chosen ids become storage keys, so they must look like ours (UUIDs). */
+const MSG_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+const validMsg = (w: { id: unknown; body: unknown; ts: unknown; ex?: unknown }): boolean =>
+  typeof w.id === "string" &&
+  MSG_ID.test(w.id) &&
+  typeof w.body === "string" &&
+  w.body.length <= MAX_BODY &&
+  Number.isFinite(w.ts) &&
+  (w.ex === undefined || Number.isFinite(w.ex));
 
 interface JoinedRoom {
   name: string;
@@ -88,7 +100,6 @@ export class Messenger {
     this.router.addTransport(this.webrtc);
     this.router.addTransport(this.relay);
     this.router.onDeliver((p) => void this.handleDeliver(p));
-    this.relay.start();
   }
 
   async load(): Promise<void> {
@@ -102,6 +113,9 @@ export class Messenger {
         offer: s.offer ? (JSON.parse(s.offer) as HandshakeOffer) : undefined,
       });
     }
+    // Start draining the relay only once sessions exist: a drained packet that
+    // finds no session is dropped, and the relay will not resend it.
+    this.relay.start();
   }
 
   subscribe(cb: (e: MessengerEvent) => void): () => void {
@@ -175,6 +189,7 @@ export class Messenger {
       return; // wrong password, tampered, or forged — drop silently.
     }
     if (post.address === this.identity.address) return; // our own post echoed back
+    if (!MSG_ID.test(post.id) || (await db.hasMessage(post.id))) return; // replay, or an id aimed at another row
     const record: ChatMessage = {
       id: post.id,
       peer: room.name,
@@ -216,6 +231,7 @@ export class Messenger {
 
   /** Encrypt and flood a chat message to a contact. */
   async sendMessage(contact: Contact, body: string, selfDestructMs?: number): Promise<ChatMessage> {
+    if (body.length > MAX_BODY) throw new Error(`Message too long (max ${MAX_BODY} characters)`);
     const id = crypto.randomUUID();
     const now = Date.now();
     const expiresAt = selfDestructMs ? now + selfDestructMs : undefined;
@@ -241,8 +257,8 @@ export class Messenger {
 
   /** Chunk, encrypt, and stream a file/image to a contact over the mesh. */
   async sendFile(contact: Contact, file: File): Promise<ChatMessage> {
+    if (file.size > MAX_FILE_SIZE) throw new Error("File too large (max 8 MB).");
     const bytes = new Uint8Array(await file.arrayBuffer());
-    if (bytes.length > MAX_FILE_SIZE) throw new Error("File exceeds size limit");
     const id = crypto.randomUUID();
     const now = Date.now();
     const meta = fileMeta(id, file.name, file.type, bytes.length);
@@ -333,6 +349,7 @@ export class Messenger {
     await this.persist(session);
 
     if (wire.t === "msg") {
+      if (!validMsg(wire) || (await db.hasMessage(wire.id))) return;
       const record: ChatMessage = {
         id: wire.id,
         peer: session.peer,
@@ -364,10 +381,11 @@ export class Messenger {
       const m = wire.meta;
       const valid =
         typeof m?.id === "string" &&
+        MSG_ID.test(m.id) &&
         Number.isInteger(m.size) && m.size >= 0 && m.size <= MAX_FILE_SIZE &&
         Number.isInteger(m.chunkSize) && m.chunkSize > 0 &&
         m.chunks === Math.max(1, Math.ceil(m.size / m.chunkSize));
-      if (!valid || this.assemblers.size >= MAX_PENDING_TRANSFERS) return;
+      if (!valid || this.assemblers.size >= MAX_PENDING_TRANSFERS || (await db.hasMessage(m.id))) return;
       const meta: FileMeta = {
         ...m,
         name: String(m.name).replace(/[\/\\\u0000-\u001f]/g, "_").slice(0, 120) || "file",

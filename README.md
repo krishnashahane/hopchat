@@ -63,20 +63,48 @@ uniform interface:
 
 - **WebRTC** — direct P2P links, serverless invite-code (offer/answer) handshake.
 - **Local bus** — instant same-origin/same-device mesh via `BroadcastChannel`.
-- **Internet relay** — store-and-forward of sealed packets (Upstash Redis); user can switch it off.
+- **Internet relay** — store-and-forward of sealed packets (Upstash Redis, 24 h retention); user can switch it off.
+  Sends are paced and retried; inbox polls are signed by the identity key and corrected for device clock skew.
 - *(native client)* Bluetooth LE. *(roadmap)* Wi-Fi Direct, Wi-Fi Aware.
 
 Because payloads are end-to-end sealed, any peer can relay without learning content.
 
 ## Develop
 
+Requires Node 24+.
+
 ```bash
 npm install
 npm run dev        # http://localhost:3000
 npm run build      # production build
-npm test           # crypto + mesh router unit tests
+npm test           # unit tests (crypto, mesh, relay client, storage)
 npm run typecheck  # strict TypeScript
 ```
+
+The relay endpoint (`/api/relay`) needs an Upstash Redis REST URL + token. Without them it
+answers `503` and the app keeps working over local and WebRTC links.
+
+```bash
+vercel env pull .env.local                 # KV_REST_API_URL, KV_REST_API_TOKEN (never commit)
+set -a; source .env.local; set +a
+npx vitest run lib/server/relay.int.test.ts   # live relay test; creates short-lived keys only
+```
+
+## Deploy
+
+Vercel project `hopchat`, domain `hopchat.in` (`www` → apex 308). Required env:
+`KV_REST_API_URL`, `KV_REST_API_TOKEN` (or `UPSTASH_REDIS_REST_URL` / `_TOKEN`).
+CI runs secret scan, typecheck, tests, build and `npm audit`; uptime and ZAP workflows probe the live site.
+
+## Limits
+
+| | |
+|---|---|
+| Text message | 8,000 characters (rooms 2,000) |
+| File | 8 MB, 16 KB chunks |
+| Relay inbox | 600 packets, 24 h |
+| Relay sends | 300/min per IP, 600/min per destination |
+| Direct WebRTC | STUN only, no TURN: links across symmetric NAT fail; the relay covers them |
 
 ## Project layout
 
