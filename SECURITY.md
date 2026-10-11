@@ -16,8 +16,8 @@ public issue for undisclosed vulnerabilities. We aim to acknowledge within 72 ho
 - At-rest protection of identity secret keys on the device.
 
 **Explicitly out of scope (v1, documented in ARCHITECTURE.md)**
-- Metadata unlinkability of sender/recipient (routing hints are cleartext for
-  flooding). Sealed-sender and cover traffic are on the roadmap.
+- Full metadata unlinkability. The relay sees only the recipient (sealed sender) but also
+  client IPs and timing; mesh peers see `to`/`from` routing hints. Cover traffic is on the roadmap.
 - A fully compromised endpoint (malware with the unlocked vault key).
 - Denial of service via mesh flooding (bounded by TTL + dedup, not eliminated).
 
@@ -82,5 +82,6 @@ service worker, then reloads empty. There is no confirmation by design.
   checks run instead: OWASP ZAP baseline (weekly, `dast.yml`), uptime/TLS/header probe every 30
   minutes (`uptime.yml`), CodeQL, gitleaks. Reports: `/.well-known/security.txt` → GitHub advisories.
 - **Signed commits:** commits in this repo are SSH-signed; `main` requires signed commits and passing CI.
-- **Logging & alerts:** relay errors are logged as structured JSON (never packets or keys) to Vercel
-  logs; failing uptime/DAST workflows email the repo owner.
+- **Logging & alerts:** API errors are logged as structured JSON (never packets, keys or addresses) to
+  Vercel logs; `/api/health` round-trips Redis and the uptime workflow (every 30 min) fails on it,
+  emailing the repo owner, as do failing DAST runs. There is deliberately no client telemetry.

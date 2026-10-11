@@ -38,7 +38,7 @@ async function pipeline<T = unknown>(cmds: Cmd[]): Promise<T[]> {
 }
 
 const INBOX_TTL = 86_400; // ciphertext expires after 24h if never collected
-const MAX_QUEUE = 500; // cap per-recipient backlog
+const MAX_QUEUE = 600; // cap per-recipient backlog; fits one max-size (8 MB) file transfer
 
 function inboxKey(addr: string): string {
   return `hop:inbox:${addr}`;
@@ -116,4 +116,25 @@ export async function rateLimit(bucket: string, limit: number, windowSec: number
   } catch {
     return false;
   }
+}
+
+// ── web push subscriptions ──────────────────────────────────────────────────
+
+const PUSH_TTL = 30 * 86_400;
+const pushKey = (addr: string) => `hop:push:${addr}`;
+
+export async function savePushSub(addr: string, sub: string): Promise<void> {
+  await command(["SET", pushKey(addr), sub, "EX", PUSH_TTL]);
+}
+
+export async function loadPushSub(addr: string): Promise<string | null> {
+  return command<string | null>(["GET", pushKey(addr)]);
+}
+
+export async function deletePushSub(addr: string): Promise<void> {
+  await command(["DEL", pushKey(addr)]);
+}
+
+export async function ping(): Promise<boolean> {
+  return (await command<string>(["PING"])) === "PONG";
 }

@@ -106,3 +106,22 @@ describe("DoubleRatchet", () => {
     expect(fromUtf8(bResumed.decrypt(aResumed.encrypt(utf8("after reload"))))).toBe("after reload");
   });
 });
+
+describe("ratchet robustness", () => {
+  it("survives forged messages with a fake DH header", () => {
+    const { a, b } = establish();
+    expect(fromUtf8(b.decrypt(a.encrypt(utf8("one"))))).toBe("one");
+    const forged = { header: { dh: b64uEncode(new Uint8Array(32).fill(9)), pn: 0, n: 5 }, ct: "AAAA", nonce: b64uEncode(new Uint8Array(12)) };
+    expect(() => b.decrypt(forged)).toThrow();
+    expect(fromUtf8(b.decrypt(a.encrypt(utf8("two"))))).toBe("two");
+    expect(fromUtf8(a.decrypt(b.encrypt(utf8("three"))))).toBe("three");
+  });
+
+  it("rejects a replayed message without losing state", () => {
+    const { a, b } = establish();
+    const m1 = a.encrypt(utf8("x"));
+    b.decrypt(m1);
+    expect(() => b.decrypt(m1)).toThrow();
+    expect(fromUtf8(b.decrypt(a.encrypt(utf8("y"))))).toBe("y");
+  });
+});

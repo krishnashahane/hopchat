@@ -4,10 +4,77 @@ import { useState } from "react";
 import { Modal, Copyable } from "./Modal";
 import { QR } from "./QR";
 import { useApp } from "@/lib/hooks/useApp";
+import { MIN_BACKUP_PASSPHRASE } from "@/lib/backup";
+
+function BackupSection() {
+  const { identity, exportBackup } = useApp();
+  const [pass, setPass] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ text: string; error: boolean } | null>(null);
+
+  const download = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const file = await exportBackup(pass);
+      const url = URL.createObjectURL(new Blob([file], { type: "application/json" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `hopchat-backup-${identity?.address.slice(4, 13).toLowerCase() ?? "id"}.json`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1_000);
+      setPass("");
+      setMsg({ text: "saved. keep the file and the passphrase apart.", error: false });
+    } catch (e) {
+      setMsg({ text: e instanceof Error ? e.message : "backup failed", error: true });
+    }
+    setBusy(false);
+  };
+
+  return (
+    <div style={{ borderTop: "1px solid var(--line)", paddingTop: 12 }}>
+      <div style={{ fontSize: 11, color: "var(--fg-dim)", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+        backup
+      </div>
+      <div style={{ fontSize: 10, color: "var(--fg-dim)", marginBottom: 8 }}>
+        encrypted file with your keys, contacts and rooms (not message history). restore it on a new
+        device; use one device at a time.
+      </div>
+      <div className="flex gap-2">
+        <input
+          className="input"
+          type="password"
+          placeholder={`passphrase (${MIN_BACKUP_PASSPHRASE}+ characters)`}
+          aria-label="backup passphrase"
+          value={pass}
+          onChange={(e) => setPass(e.target.value)}
+          autoComplete="new-password"
+        />
+        <button className="btn" onClick={download} disabled={busy || pass.length < MIN_BACKUP_PASSPHRASE}>
+          {busy ? "sealing…" : "download"}
+        </button>
+      </div>
+      {msg && <div style={{ fontSize: 10, marginTop: 6, color: msg.error ? "var(--danger)" : "var(--accent)" }}>{msg.text}</div>}
+    </div>
+  );
+}
 
 export function MyIdentity({ onClose }: { onClose: () => void }) {
-  const { identity, myBundle, reset, relayEnabled, setRelayEnabled, netOnline } = useApp();
+  const { identity, myBundle, reset, relayEnabled, setRelayEnabled, netOnline, pushEnabled, setPushEnabled } = useApp();
   const [confirmReset, setConfirmReset] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushErr, setPushErr] = useState<string | null>(null);
+
+  const togglePush = async (on: boolean) => {
+    setPushBusy(true);
+    setPushErr(null);
+    try {
+      await setPushEnabled(on);
+    } catch (e) {
+      setPushErr(e instanceof Error ? e.message : "could not change notifications");
+    }
+    setPushBusy(false);
+  };
   if (!identity || !myBundle) return null;
 
   return (
@@ -68,7 +135,30 @@ export function MyIdentity({ onClose }: { onClose: () => void }) {
           <div style={{ fontSize: 10, color: "var(--fg-dim)", marginTop: 4 }}>
             off = local-only mesh (same-device + direct WebRTC links).
           </div>
+          {pushEnabled !== null && (
+            <label
+              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", padding: "10px 0 0" }}
+            >
+              <span>
+                <span style={{ color: "var(--fg)" }}>notifications</span>
+                <span style={{ display: "block", fontSize: 10, color: "var(--fg-dim)" }}>
+                  wake this device when a message waits on the relay · no content or sender is sent;
+                  your browser&apos;s push service sees only the timing
+                </span>
+              </span>
+              <input
+                type="checkbox"
+                checked={pushEnabled}
+                disabled={pushBusy || !relayEnabled}
+                onChange={(e) => void togglePush(e.target.checked)}
+                style={{ width: 16, height: 16, accentColor: "var(--accent)" }}
+              />
+            </label>
+          )}
+          {pushErr && <div style={{ fontSize: 10, color: "var(--danger)", marginTop: 4 }}>{pushErr}</div>}
         </div>
+
+        <BackupSection />
 
         <div style={{ borderTop: "1px solid var(--line)", paddingTop: 12 }}>
           {!confirmReset ? (

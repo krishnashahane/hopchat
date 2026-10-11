@@ -20,7 +20,7 @@ import {
   type Identity,
 } from "@/lib/crypto/identity";
 import { sealVault, openVault, needsPassphrase, needsUpgrade, type SealedVault } from "@/lib/crypto/vault";
-import { deriveRoom, normalizeRoom } from "@/lib/crypto/room";
+import { deriveRoom, normalizeRoom, destForKey } from "@/lib/crypto/room";
 import { b64uEncode, b64uDecode } from "@/lib/crypto/encoding";
 import { HELP, NICK, isCommand, parseCommand } from "@/lib/commands";
 import { GeoRelayPool, GEOHASH, GEO_LEVELS, MAX_GEO_BODY, encodeGeohash, geoKey, geoPubkey, signGeoEvent, type GeoPost } from "@/lib/nostr";
@@ -28,6 +28,8 @@ import { Messenger } from "@/lib/messenger";
 import * as db from "@/lib/storage/db";
 import type { StoredRoom } from "@/lib/storage/db";
 import type { Contact, ChatMessage } from "@/lib/types";
+import { pushSupported, enablePush, disablePush } from "@/lib/push";
+import { makeBackup, readBackup } from "@/lib/backup";
 
 type Phase = "loading" | "onboarding" | "unlock" | "ready";
 
@@ -52,10 +54,18 @@ interface AppState {
   netOnline: boolean;
   relayEnabled: boolean;
   setRelayEnabled: (on: boolean) => void;
+  /** Web Push wake-ups; null when this browser can't do push. */
+  pushEnabled: boolean | null;
+  setPushEnabled: (on: boolean) => Promise<void>;
   error: string | null;
   createIdentity: (passphrase?: string) => Promise<void>;
   unlock: (passphrase: string) => Promise<void>;
+  /** Encrypted backup file contents (identity, contacts, rooms). */
+  exportBackup: (passphrase: string) => Promise<string>;
+  /** Restore on a device with no identity; `lock` also requires the passphrase to unlock here. */
+  restoreBackup: (file: string, passphrase: string, lock: boolean) => Promise<void>;
   addContact: (bundle: string, nickname: string) => Promise<Contact>;
+  setVerified: (addr: string, verified: boolean) => Promise<void>;
   selectContact: (addr: string) => Promise<void>;
   deselect: () => void;
   /** Send text, or run it as an IRC-style command when it starts with "/". */
@@ -134,6 +144,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [peerCount, setPeerCount] = useState(0);
   const [netOnline, setNetOnline] = useState(false);
   const [relayEnabled, setRelayEnabledState] = useState(true);
+  const [pushEnabled, setPushEnabledState] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
   const messengerRef = useRef<Messenger | null>(null);
   const activeRef = useRef<string | null>(null);
@@ -187,8 +198,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     });
     const joined = await db.listRooms();
     for (const r of joined) {
-      if (isGeo(r.name)) pool().subscribe(r.name.slice(GEO.length));
-      else m.joinRoom(r);
+      if (isGeo(r.name)) {
+        pool().subscribe(r.name.slice(GEO.length));
+        continue;
+      }
+      // Rooms joined before write-authorized destinations: move to the new address.
+      const dest = destForKey(b64uDecode(r.key));
+      if (r.dest !== dest) {
+        r.dest = dest;
+        await db.saveRoom(r);
+      }
+      m.joinRoom(r);
     }
     setRooms(joined);
     setContacts(await db.listContacts());
@@ -196,6 +216,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     m.setRelayEnabled(pref);
     setRelayEnabledState(pref);
     setNick(store.get("hop.nick") ?? defaultNick(id.address));
+    setPushEnabledState(pushSupported() ? store.get("hop.push") === "1" : null);
     setIdentity(id);
     setPhase("ready");
     void db.purgeExpired();
@@ -224,6 +245,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     messengerRef.current?.setRelayEnabled(on);
     setRelayEnabledState(on);
     store.set("hop.relay", on ? "1" : "0");
+  }, []);
+
+  const setPushEnabled = useCallback(async (on: boolean) => {
+    const m = messengerRef.current;
+    if (!m) return;
+    const sign = () => m.signed("push");
+    if (on) await enablePush(sign);
+    else await disablePush(sign);
+    store.set("hop.push", on ? "1" : "0");
+    setPushEnabledState(on);
   }, []);
 
   useEffect(() => {
@@ -273,6 +304,37 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [bootMessenger],
   );
 
+  const exportBackup = useCallback(
+    async (passphrase: string) => {
+      if (!identity) throw new Error("no identity");
+      return makeBackup(identity, await db.listContacts(), await db.listRooms(), nick, passphrase);
+    },
+    [identity, nick],
+  );
+
+  const restoreBackup = useCallback(
+    async (file: string, passphrase: string, lock: boolean) => {
+      setError(null);
+      if (await db.loadIdentityRecord()) throw new Error("this device already has an identity");
+      const r = await readBackup(file, passphrase);
+      const dk = newDataKey();
+      const vault = await sealVault(
+        JSON.stringify({ ...serializeSecret(r.identity), dk }),
+        lock ? { passphrase } : { deviceKey: await db.deviceKey() },
+      );
+      db.setDataKey(b64uDecode(dk));
+      for (const c of r.contacts) await db.upsertContact(c);
+      for (const room of r.rooms) await db.saveRoom(room);
+      if (r.nick && NICK.test(r.nick)) store.set("hop.nick", r.nick);
+      // Identity record last: a restore that fails midway leaves the device in onboarding.
+      await db.saveIdentityRecord({ vault, address: r.identity.address, bundle: encodePublicBundle(r.identity.publicKeys) });
+      await bootMessenger(r.identity);
+      // Contacts still hold sessions with the old device; open fresh ones.
+      for (const c of r.contacts) await messengerRef.current?.greet(c);
+    },
+    [bootMessenger],
+  );
+
   const unlock = useCallback(
     async (passphrase: string) => {
       setError(null);
@@ -301,6 +363,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     messengerRef.current?.registerContact(contact);
     setContacts(await db.listContacts());
     return contact;
+  }, []);
+
+  const setVerified = useCallback(async (addr: string, verified: boolean) => {
+    const c = await db.getContact(addr);
+    if (!c) return;
+    const next = { ...c, verified };
+    await db.upsertContact(next);
+    messengerRef.current?.registerContact(next);
+    setContacts(await db.listContacts());
   }, []);
 
   const selectContact = useCallback(async (addr: string) => {
@@ -350,7 +421,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [contacts, rooms, nick, notify, refreshActive, pool],
   );
 
+  /** Tell the relay to stop waking a device that is about to forget its identity. */
+  const dropPush = useCallback(() => {
+    const m = messengerRef.current;
+    if (m && store.get("hop.push") === "1") void disablePush(() => m.signed("push"));
+    store.set("hop.push", "0");
+    setPushEnabledState((v) => (v === null ? null : false));
+  }, []);
+
   const reset = useCallback(async () => {
+    dropPush();
     geoPool.current?.close();
     geoPool.current = null;
     identityRef.current = null;
@@ -365,10 +445,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setMessages([]);
     setNotices([]);
     setPhase("onboarding");
-  }, []);
+  }, [dropPush]);
 
   /** Panic: destroy keys, history, caches and preferences, then reload to a blank app. */
   const panic = useCallback(async () => {
+    dropPush();
     geoPool.current?.close();
     geoPool.current = null;
     messengerRef.current?.destroy();
@@ -376,7 +457,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     await db.destroy().catch(() => {});
     await wipeBrowserState();
     window.location.replace("/");
-  }, []);
+  }, [dropPush]);
 
   const runCommand = useCallback(
     async (input: string) => {
@@ -492,11 +573,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     async (input: string, selfDestructMs?: number) => {
       const text = input.trim();
       if (!text) return;
-      if (isCommand(text)) return runCommand(text);
-      const target = activeRef.current;
-      if (!target) return notify("pick a conversation, or type /help", "error");
-      // "//text" escapes a leading slash.
-      await deliver(target, text.startsWith("//") ? text.slice(1) : text, selfDestructMs);
+      try {
+        if (isCommand(text)) return await runCommand(text);
+        const target = activeRef.current;
+        if (!target) return notify("pick a conversation, or type /help", "error");
+        // "//text" escapes a leading slash.
+        await deliver(target, text.startsWith("//") ? text.slice(1) : text, selfDestructMs);
+      } catch (e) {
+        notify(e instanceof Error ? e.message : "could not send", "error");
+      }
     },
     [runCommand, deliver, notify],
   );
@@ -530,10 +615,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     netOnline,
     relayEnabled,
     setRelayEnabled,
+    pushEnabled,
+    setPushEnabled,
     error,
     createIdentity,
     unlock,
+    exportBackup,
+    restoreBackup,
     addContact,
+    setVerified,
     selectContact,
     deselect,
     submit,

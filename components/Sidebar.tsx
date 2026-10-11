@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { useApp } from "@/lib/hooks/useApp";
 import { MAX_HOPS } from "@/lib/mesh/router";
 
@@ -22,7 +22,9 @@ export function Sidebar({
   onAddContact: () => void;
   onLinkPeer: () => void;
 }) {
-  const { identity, contacts, rooms, activeAddr, selectContact, peerCount, netOnline, panic } = useApp();
+  const { identity, contacts, rooms, activeAddr, selectContact, peerCount, netOnline, panic, submit, notices } = useApp();
+  const [cmd, setCmd] = useState("");
+  const lastNotice = notices.at(-1);
   const reach = peerCount + (netOnline ? 1 : 0);
   const taps = useRef<number[]>([]);
 
@@ -138,6 +140,37 @@ export function Sidebar({
           ),
         )}
       </div>
+
+      {/* Phones show one pane at a time, so the list view carries its own command line. */}
+      <form
+        className="mobile-only flex-col gap-1 px-4 py-3"
+        style={{ borderTop: "1px solid var(--line)", width: "100%" }}
+        onSubmit={(e) => {
+          e.preventDefault();
+          const value = cmd.trim();
+          if (!value) return;
+          setCmd("");
+          void submit(value);
+        }}
+      >
+        {lastNotice && (
+          <div style={{ fontSize: 11, color: lastNotice.tone === "error" ? "var(--danger)" : "var(--fg-dim)" }}>{lastNotice.text}</div>
+        )}
+        <div className="flex gap-2">
+          <input
+            className="input"
+            placeholder="/join #room · /help"
+            aria-label="command"
+            value={cmd}
+            onChange={(e) => setCmd(e.target.value)}
+            autoCapitalize="off"
+            autoCorrect="off"
+          />
+          <button className="btn btn-primary" type="submit" disabled={!cmd.trim()}>
+            run
+          </button>
+        </div>
+      </form>
 
       <div className="px-4 py-2" style={{ borderTop: "1px solid var(--line)", fontSize: 10, color: "var(--fg-dim)" }}>
         e2e · pqc-hybrid · {MAX_HOPS}-hop mesh · local-first

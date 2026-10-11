@@ -24,7 +24,8 @@ export const viewport: Viewport = {
   themeColor: "#05070a",
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
+  // No maximumScale: pinch-zoom must stay available (WCAG 1.4.4); inputs are 16px on
+  // phones so iOS doesn't auto-zoom on focus.
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {

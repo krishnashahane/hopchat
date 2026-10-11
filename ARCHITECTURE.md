@@ -47,16 +47,16 @@ and crypto/mesh have no app dependencies at all.
   signaling server, matching the "no server controls messages" principle. A future
   optional relay can automate discovery without weakening E2E.
 - **Local-first storage.** All history lives in IndexedDB; there is no server copy.
-  Identity secrets are only ever persisted inside a scrypt/AES-GCM vault.
-- **Metadata note (v1).** The `to`/`from` routing hints are cleartext for flooding.
-  Confidentiality/integrity/authenticity are fully protected; sender/recipient
-  unlinkability (sealed-sender, cover traffic) is tracked for a later milestone.
+  Identity secrets are only ever persisted inside an Argon2id (or non-extractable WebCrypto) AES-GCM vault.
+- **Metadata.** Mesh peers see the `to`/`from` routing hints. Over the internet relay,
+  direct packets are sealed-sender wrapped (relay sees only `to`) and room posts carry no
+  sender hint. Cover traffic is tracked for a later milestone.
 
 ## Roadmap
 
 - Double Ratchet for per-message ratcheting PFS + post-compromise security.
 - Group chat via sender-keys; broadcast channels and communities.
 - Additional transports: Bluetooth LE mesh, Wi-Fi Direct/Aware, optional internet relay.
-- Sealed-sender + cover traffic for metadata privacy.
+- Cover traffic for metadata privacy.
 - Voice/video over WebRTC media channels.
 - On-device AI (summarize, translate, spam/scam detection).

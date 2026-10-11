@@ -52,6 +52,11 @@ export interface RouterOptions {
   defaultTtl?: number;
   /** Accept packets at most this old (ms) — replay window. */
   maxAgeMs?: number;
+  /**
+   * Window for packets addressed to us, which the relay may hold for up to 24h
+   * while we are offline. Replays inside it are still rejected by the ratchet.
+   */
+  maxDirectAgeMs?: number;
 }
 
 export class MeshRouter {
@@ -63,11 +68,13 @@ export class MeshRouter {
   private readonly selfId: string;
   private readonly defaultTtl: number;
   private readonly maxAgeMs: number;
+  private readonly maxDirectAgeMs: number;
 
   constructor(opts: RouterOptions) {
     this.selfId = opts.selfId;
     this.defaultTtl = Math.min(opts.defaultTtl ?? MAX_HOPS, MAX_HOPS);
     this.maxAgeMs = opts.maxAgeMs ?? 5 * 60_000;
+    this.maxDirectAgeMs = Math.max(this.maxAgeMs, opts.maxDirectAgeMs ?? 24 * 60 * 60_000);
   }
 
   addTransport(t: Transport): void {
@@ -128,7 +135,8 @@ export class MeshRouter {
     if (!Number.isInteger(packet.ttl) || packet.ttl <= 0 || packet.ttl > 32) return false;
     if (!Number.isFinite(packet.ts)) return false;
     const age = Date.now() - packet.ts;
-    if (age > this.maxAgeMs || age < -this.maxAgeMs) return false;
+    const window = packet.to === this.selfId ? this.maxDirectAgeMs : this.maxAgeMs;
+    if (age > window || age < -window) return false;
     return true;
   }
 

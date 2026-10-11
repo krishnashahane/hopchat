@@ -9,10 +9,17 @@
  */
 import type { Transport } from "./router";
 import type { MeshPacket } from "@/lib/types";
-import type { Identity } from "@/lib/crypto/identity";
+import type { Identity, PublicBundle } from "@/lib/crypto/identity";
+import { sealSender, openSender, isSealedSender } from "@/lib/crypto/sealed";
 import { encodePublicBundle } from "@/lib/crypto/identity";
 import { signBytes } from "@/lib/crypto/e2e";
 import { utf8, b64uEncode } from "@/lib/crypto/encoding";
+
+/** Stay under the server's per-IP send budget (300/min) with headroom for NAT neighbours. */
+const SEND_GAP_MS = 250;
+const SEND_TRIES = 4;
+/** Packets above this size (file chunks) yield to chat text, acks and handshakes. */
+const BULK_BYTES = 4 * 1024;
 
 export class RelayTransport implements Transport {
   readonly name = "relay";
@@ -30,6 +37,13 @@ export class RelayTransport implements Transport {
   /** Bumped whenever the room loop restarts so a stale in-flight loop exits. */
   private roomGen = 0;
   private roomLoopActive = false;
+  /** Server clock minus ours, learned from a rejected poll, so a wrong device clock can't lock us out. */
+  private clockOffset = 0;
+  /** Sends are serialized: the inbox keeps arrival order and the rate limit isn't burst through. */
+  private readonly urgent: string[] = [];
+  private readonly bulk: string[] = [];
+  private sending = false;
+  private lookup: (addr: string) => PublicBundle | undefined = () => undefined;
 
   constructor(private readonly identity: Identity) {
     this.selfId = identity.address;
@@ -37,10 +51,33 @@ export class RelayTransport implements Transport {
   }
 
   /** Signed, single-use headers proving ownership of our address (kept out of URLs/logs). */
-  private pollHeaders(): Record<string, string> {
-    const ts = Date.now().toString();
-    const sig = b64uEncode(signBytes(this.identity, utf8(`hop-poll:${this.selfId}:${ts}`)));
+  signedHeaders(scope: "poll" | "ice" | "push" = "poll"): Record<string, string> {
+    const ts = (Date.now() + this.clockOffset).toString();
+    const sig = b64uEncode(signBytes(this.identity, utf8(`hop-${scope}:${this.selfId}:${ts}`)));
     return { "x-hop-addr": this.selfId, "x-hop-ts": ts, "x-hop-sig": sig, "x-hop-bundle": this.bundle };
+  }
+
+  /** Resolve a recipient's keys so direct packets can be sealed-sender wrapped. */
+  setRecipientLookup(fn: (addr: string) => PublicBundle | undefined): void {
+    this.lookup = fn;
+  }
+
+  /**
+   * What the relay stores. Direct packets to a known contact are wrapped so the relay
+   * learns only the destination; room posts drop the sender hint (authorship is signed
+   * inside the sealed post). Packets forwarded for strangers go as they came.
+   */
+  private wireText(packet: MeshPacket): string {
+    if (packet.kind === "room") return JSON.stringify({ ...packet, from: "-" });
+    const text = JSON.stringify(packet);
+    const peer = this.lookup(packet.to);
+    return peer ? JSON.stringify(sealSender(packet.to, peer.kex, text)) : text;
+  }
+
+  /** Parse what the relay delivered, unwrapping sealed-sender boxes addressed to us. */
+  private fromWire(raw: string): MeshPacket {
+    const v = JSON.parse(raw) as unknown;
+    return (isSealedSender(v) ? JSON.parse(openSender(this.identity, v)) : v) as MeshPacket;
   }
 
   /** Follow these rooms' relay logs (in addition to our private inbox). */
@@ -69,7 +106,7 @@ export class RelayTransport implements Transport {
         this.rooms.set(dest, head < after ? 0 : Math.max(after, ...packets.map((x) => x.s)));
         for (const { p } of packets) {
           try {
-            this.handler?.(JSON.parse(p) as MeshPacket, this.name);
+            this.handler?.(this.fromWire(p), this.name);
           } catch {
             /* skip malformed */
           }
@@ -118,11 +155,12 @@ export class RelayTransport implements Transport {
   }
 
   private async loop(): Promise<void> {
+    let quick = true; // first poll (and the one after any failure) returns at once
     while (this.running) {
       this.abort = new AbortController();
       try {
         const res = await fetch("/api/relay", {
-          headers: this.pollHeaders(),
+          headers: { ...this.signedHeaders(), ...(quick ? { "x-hop-wait": "0" } : {}) },
           signal: this.abort.signal,
           cache: "no-store",
         });
@@ -132,22 +170,30 @@ export class RelayTransport implements Transport {
           await this.sleep(30_000);
           continue;
         }
+        if (res.status === 401) this.syncClock(res);
         if (!res.ok) throw new Error(`relay ${res.status}`);
         this.setOnline(true);
+        quick = false;
         const { packets } = (await res.json()) as { packets: string[] };
         for (const raw of packets ?? []) {
           try {
-            this.handler?.(JSON.parse(raw) as MeshPacket, this.name);
+            this.handler?.(this.fromWire(raw), this.name);
           } catch {
             /* skip malformed */
           }
         }
       } catch {
         if (!this.running) break;
+        quick = true;
         this.setOnline(false);
         await this.sleep(3_000); // transient error — reconnect
       }
     }
+  }
+
+  private syncClock(res: Response): void {
+    const server = Date.parse(res.headers.get("date") ?? "");
+    if (Number.isFinite(server)) this.clockOffset = server - Date.now();
   }
 
   private sleep(ms: number): Promise<void> {
@@ -156,15 +202,37 @@ export class RelayTransport implements Transport {
 
   broadcast(packet: MeshPacket): void {
     if (!this.enabled || typeof window === "undefined") return;
-    void fetch("/api/relay", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      // No `keepalive`: browsers cap in-flight keepalive bodies at 64 KB total,
-      // which silently dropped file chunks.
-      body: JSON.stringify({ to: packet.to, packet: JSON.stringify(packet) }),
-    }).catch(() => {
-      /* delivery retried by the app/mesh; never throw into the router */
-    });
+    const body = JSON.stringify({ to: packet.to, packet: this.wireText(packet) });
+    (body.length > BULK_BYTES ? this.bulk : this.urgent).push(body);
+    if (!this.sending) void this.drainSends();
+  }
+
+  private async drainSends(): Promise<void> {
+    this.sending = true;
+    try {
+      for (let body = this.urgent.shift() ?? this.bulk.shift(); body; body = this.urgent.shift() ?? this.bulk.shift()) {
+        if (!this.enabled) break;
+        await this.post(body);
+        await this.sleep(SEND_GAP_MS);
+      }
+    } finally {
+      this.sending = false;
+    }
+  }
+
+  /** POST one packet, retrying rate limits and transient failures; never throws into the router. */
+  private async post(body: string): Promise<void> {
+    for (let attempt = 1; attempt <= SEND_TRIES; attempt++) {
+      try {
+        // No `keepalive`: browsers cap in-flight keepalive bodies at 64 KB total,
+        // which silently dropped file chunks.
+        const res = await fetch("/api/relay", { method: "POST", headers: { "Content-Type": "application/json" }, body });
+        if (res.ok || (res.status >= 400 && res.status < 500 && res.status !== 429)) return;
+      } catch {
+        /* offline — retry below */
+      }
+      if (attempt < SEND_TRIES) await this.sleep(1_000 * 2 ** attempt);
+    }
   }
 
   isOnline(): boolean {
@@ -178,6 +246,7 @@ export class RelayTransport implements Transport {
 
   close(): void {
     this.running = false;
+    this.urgent.length = this.bulk.length = 0;
     this.abort?.abort();
     if (this.roomTimer) clearTimeout(this.roomTimer);
     this.roomTimer = null;

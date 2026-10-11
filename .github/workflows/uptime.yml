@@ -26,3 +26,8 @@ jobs:
         run: |
           code=$(curl -sS -o /dev/null -w '%{http_code}' "https://hopchat.in/api/relay?room=ROOM-AAAAAAAAAAAAAAAAAAAAAAAA&after=0")
           test "$code" = "200" || { echo "relay returned $code"; exit 1; }
+      - name: Health (Redis round-trip)
+        run: |
+          body=$(curl -sS --max-time 15 https://hopchat.in/api/health)
+          echo "$body"
+          echo "$body" | grep -q '"ok":true' || { echo "health check failed"; exit 1; }

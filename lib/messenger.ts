@@ -15,7 +15,7 @@ import { MeshRouter, MAX_HOPS } from "@/lib/mesh/router";
 import { sealPost, openPost, MAX_ROOM_BODY, type SealedPost } from "@/lib/crypto/room";
 import { b64uDecode } from "@/lib/crypto/encoding";
 import { LocalBusTransport } from "@/lib/mesh/localbus";
-import { WebRTCMeshTransport } from "@/lib/mesh/webrtc";
+import { WebRTCMeshTransport, DEFAULT_ICE } from "@/lib/mesh/webrtc";
 import { RelayTransport } from "@/lib/mesh/relay";
 import type { Contact, ChatMessage, MeshPacket } from "@/lib/types";
 import * as db from "@/lib/storage/db";
@@ -33,6 +33,19 @@ import {
 /** Incoming files keep their type only if it is a raster image; all else downloads as bytes. */
 const SAFE_IMAGE = /^image\/(png|jpeg|gif|webp|avif|bmp)$/;
 const MAX_PENDING_TRANSFERS = 8;
+const MAX_SEEN_EK = 16;
+/** Keeps a sealed message well under the relay's 64 KB packet cap, even for 4-byte UTF-8. */
+export const MAX_BODY = 8_000;
+/** Peer-chosen ids become storage keys, so they must look like ours (UUIDs). */
+const MSG_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+const validMsg = (w: { id: unknown; body: unknown; ts: unknown; ex?: unknown }): boolean =>
+  typeof w.id === "string" &&
+  MSG_ID.test(w.id) &&
+  typeof w.body === "string" &&
+  w.body.length <= MAX_BODY &&
+  Number.isFinite(w.ts) &&
+  (w.ex === undefined || Number.isFinite(w.ex));
 
 interface JoinedRoom {
   name: string;
@@ -42,6 +55,8 @@ interface JoinedRoom {
 type Wire =
   | { t: "msg"; id: string; body: string; ts: number; ex?: number }
   | { t: "ack"; id: string; status: "delivered" | "read" }
+  /** Opens (or re-opens) a session without a visible message, e.g. after a restore. */
+  | { t: "hi" }
   | { t: "fmeta"; meta: FileMeta; ts: number }
   | { t: "fchunk"; id: string; i: number; data: string };
 
@@ -56,6 +71,8 @@ interface Session {
   established: boolean;
   ratchet: DoubleRatchet;
   offer?: HandshakeOffer;
+  /** Handshake ephemeral keys already processed for this peer (replay guard). */
+  seenEk?: string[];
 }
 
 export type MessengerEvent =
@@ -80,15 +97,18 @@ export class Messenger {
   constructor(private readonly identity: Identity) {
     this.router = new MeshRouter({ selfId: identity.address, defaultTtl: MAX_HOPS });
     this.localbus = new LocalBusTransport(identity.address);
-    this.webrtc = new WebRTCMeshTransport();
     this.relay = new RelayTransport(identity);
+    this.webrtc = new WebRTCMeshTransport(() => this.iceServers());
     this.webrtc.onStatusChange(() => this.emit({ type: "peers", count: this.peerCount() }));
     this.relay.onStatusChange((online) => this.emit({ type: "net", online }));
+    this.relay.setRecipientLookup((addr) => {
+      const c = this.contacts.get(addr);
+      return c ? decodePublicBundle(c.bundle) : undefined;
+    });
     this.router.addTransport(this.localbus);
     this.router.addTransport(this.webrtc);
     this.router.addTransport(this.relay);
     this.router.onDeliver((p) => void this.handleDeliver(p));
-    this.relay.start();
   }
 
   async load(): Promise<void> {
@@ -100,8 +120,12 @@ export class Messenger {
         established: s.established,
         ratchet: DoubleRatchet.deserialize(s.ratchet),
         offer: s.offer ? (JSON.parse(s.offer) as HandshakeOffer) : undefined,
+        seenEk: s.seenEk,
       });
     }
+    // Start draining the relay only once sessions exist: a drained packet that
+    // finds no session is dropped, and the relay will not resend it.
+    this.relay.start();
   }
 
   subscribe(cb: (e: MessengerEvent) => void): () => void {
@@ -113,6 +137,23 @@ export class Messenger {
     for (const l of this.listeners) l(e);
   }
 
+  private ice: { servers: RTCIceServer[]; until: number } | null = null;
+
+  /** STUN, plus TURN from the server when the relay is on (cached until it nears expiry). */
+  private async iceServers(): Promise<RTCIceServer[]> {
+    if (!this.relay.isEnabled()) return DEFAULT_ICE;
+    if (this.ice && Date.now() < this.ice.until) return this.ice.servers;
+    try {
+      const res = await fetch("/api/ice", { headers: this.relay.signedHeaders("ice"), cache: "no-store" });
+      if (!res.ok) return DEFAULT_ICE;
+      const { iceServers, ttl } = (await res.json()) as { iceServers: RTCIceServer[]; ttl: number };
+      this.ice = { servers: iceServers, until: Date.now() + Math.max(0, ttl - 600) * 1000 };
+      return iceServers;
+    } catch {
+      return DEFAULT_ICE;
+    }
+  }
+
   peerCount(): number {
     return this.router.peerCount();
   }
@@ -121,6 +162,11 @@ export class Messenger {
   setRelayEnabled(on: boolean): void {
     this.relay.setEnabled(on);
     if (!on) this.emit({ type: "net", online: false });
+  }
+
+  /** Signed single-use headers for the relay's authenticated APIs. */
+  signed(scope: "poll" | "ice" | "push"): Record<string, string> {
+    return this.relay.signedHeaders(scope);
   }
 
   isRelayEnabled(): boolean {
@@ -175,6 +221,7 @@ export class Messenger {
       return; // wrong password, tampered, or forged — drop silently.
     }
     if (post.address === this.identity.address) return; // our own post echoed back
+    if (!MSG_ID.test(post.id) || (await db.hasMessage(post.id))) return; // replay, or an id aimed at another row
     const record: ChatMessage = {
       id: post.id,
       peer: room.name,
@@ -195,6 +242,7 @@ export class Messenger {
       established: s.established,
       ratchet: s.ratchet.serialize(),
       offer: s.offer ? JSON.stringify(s.offer) : undefined,
+      seenEk: s.seenEk,
     });
   }
 
@@ -216,6 +264,7 @@ export class Messenger {
 
   /** Encrypt and flood a chat message to a contact. */
   async sendMessage(contact: Contact, body: string, selfDestructMs?: number): Promise<ChatMessage> {
+    if (body.length > MAX_BODY) throw new Error(`Message too long (max ${MAX_BODY} characters)`);
     const id = crypto.randomUUID();
     const now = Date.now();
     const expiresAt = selfDestructMs ? now + selfDestructMs : undefined;
@@ -232,6 +281,13 @@ export class Messenger {
     return record;
   }
 
+  /** Open a session with a contact without a visible message (e.g. after restoring a backup). */
+  async greet(contact: Contact): Promise<void> {
+    const session = this.senderSession(contact);
+    this.emitRatchet(session, contact.address, { t: "hi" });
+    await this.persist(session);
+  }
+
   /** Encrypt one wire record for a contact and flood it as a mesh packet. */
   private emitRatchet(session: Session, to: string, wire: Wire): void {
     const msg = session.ratchet.encrypt(utf8(JSON.stringify(wire)));
@@ -241,8 +297,8 @@ export class Messenger {
 
   /** Chunk, encrypt, and stream a file/image to a contact over the mesh. */
   async sendFile(contact: Contact, file: File): Promise<ChatMessage> {
+    if (file.size > MAX_FILE_SIZE) throw new Error("File too large (max 8 MB).");
     const bytes = new Uint8Array(await file.arrayBuffer());
-    if (bytes.length > MAX_FILE_SIZE) throw new Error("File exceeds size limit");
     const id = crypto.randomUUID();
     const now = Date.now();
     const meta = fileMeta(id, file.name, file.type, bytes.length);
@@ -268,45 +324,49 @@ export class Messenger {
     return record;
   }
 
-  private async resolveSession(from: string, hs?: HandshakeOffer): Promise<Session | null> {
-    const existing = this.sessions.get(from);
-    if (!hs) return existing ?? null;
-
-    // Adopt a responder session from the handshake when we have none, or when a
-    // simultaneous-initiation (glare) tie-break makes the peer the canonical initiator.
-    const glareYield =
-      existing?.role === "initiator" && !existing.established && from < this.identity.address;
-    if (existing && !glareYield) return existing;
-
-    const peerBundle = decodePublicBundle(hs.ik);
-    const peerAddr = deriveAddress(peerBundle);
-    if (peerAddr !== from) return null; // routing hint must match the handshake identity
-    const sk = respondHandshake(this.identity, peerBundle, hs);
-    const session: Session = {
-      peer: peerAddr,
-      role: "responder",
-      established: true,
-      ratchet: DoubleRatchet.initReceiver(sk, {
-        sk: this.identity.secretKeys.kex,
-        pk: this.identity.publicKeys.kex,
-      }),
-    };
-    this.sessions.set(peerAddr, session);
-
-    if (!this.contacts.has(peerAddr)) {
-      const contact: Contact = {
-        address: peerAddr,
-        fingerprint: fingerprintHex(peerBundle),
-        bundle: encodePublicBundle(peerBundle),
-        nickname: peerAddr.replace("HOP-", "").slice(0, 9),
-        verified: false,
-        addedAt: Date.now(),
+  /** Build (but do not install) a responder session from a peer's handshake offer. */
+  private responderSession(from: string, hs: HandshakeOffer, prior?: Session): Session | null {
+    try {
+      const peerBundle = decodePublicBundle(hs.ik);
+      if (deriveAddress(peerBundle) !== from) return null; // routing hint must match the handshake identity
+      const sk = respondHandshake(this.identity, peerBundle, hs);
+      return {
+        peer: from,
+        role: "responder",
+        established: true,
+        ratchet: DoubleRatchet.initReceiver(sk, {
+          sk: this.identity.secretKeys.kex,
+          pk: this.identity.publicKeys.kex,
+        }),
+        seenEk: [...(prior?.seenEk ?? []), hs.ek].slice(-MAX_SEEN_EK),
       };
-      await db.upsertContact(contact);
-      this.contacts.set(peerAddr, contact);
-      this.emit({ type: "contact", contact });
+    } catch {
+      return null;
     }
-    return session;
+  }
+
+  private open(session: Session, msg: RatchetMessage): Wire | null {
+    try {
+      return JSON.parse(fromUtf8(session.ratchet.decrypt(msg))) as Wire;
+    } catch {
+      return null; // not for this session, replayed, or tampered (ratchet state unchanged)
+    }
+  }
+
+  private async ensureContact(peerAddr: string, bundle: string): Promise<void> {
+    if (this.contacts.has(peerAddr)) return;
+    const pub = decodePublicBundle(bundle);
+    const contact: Contact = {
+      address: peerAddr,
+      fingerprint: fingerprintHex(pub),
+      bundle: encodePublicBundle(pub),
+      nickname: peerAddr.replace("HOP-", "").slice(0, 9),
+      verified: false,
+      addedAt: Date.now(),
+    };
+    await db.upsertContact(contact);
+    this.contacts.set(peerAddr, contact);
+    this.emit({ type: "contact", contact });
   }
 
   private async handleDeliver(packet: MeshPacket): Promise<void> {
@@ -314,25 +374,34 @@ export class Messenger {
     const payload = packet.payload as RatchetPacket;
     if (!payload || typeof payload !== "object" || !payload.msg) return;
 
-    let session: Session | null;
-    try {
-      session = await this.resolveSession(packet.from, payload.hs);
-    } catch {
-      return; // unresolvable handshake — drop.
-    }
-    if (!session) return;
+    const existing = this.sessions.get(packet.from);
+    let session = existing ?? null;
+    let wire = existing ? this.open(existing, payload.msg) : null;
 
-    let wire: Wire;
-    try {
-      wire = JSON.parse(fromUtf8(session.ratchet.decrypt(payload.msg))) as Wire;
-    } catch {
-      return; // not for us, out-of-session, or tampered — drop.
+    // A handshake that the current session cannot read means the peer started over
+    // (first contact, restored backup, lost state). Adopt it only if it decrypts, which
+    // proves the sender holds the identity key, and never for an offer already seen
+    // (replay). On simultaneous initiation the lower address keeps the initiator role.
+    const hs = payload.hs;
+    if (!wire && hs && typeof hs.ek === "string" && !existing?.seenEk?.includes(hs.ek)) {
+      const keepOurs = existing?.role === "initiator" && !existing.established && packet.from > this.identity.address;
+      const fresh = keepOurs ? null : this.responderSession(packet.from, hs, existing);
+      wire = fresh ? this.open(fresh, payload.msg) : null;
+      if (fresh && wire) {
+        session = fresh;
+        this.sessions.set(packet.from, fresh);
+        await this.ensureContact(packet.from, hs.ik);
+      } else if (existing) {
+        existing.seenEk = [...(existing.seenEk ?? []), hs.ek].slice(-MAX_SEEN_EK);
+      }
     }
+    if (!session || !wire) return;
 
     if (session.role === "initiator" && !session.established) session.established = true;
     await this.persist(session);
 
     if (wire.t === "msg") {
+      if (!validMsg(wire) || (await db.hasMessage(wire.id))) return;
       const record: ChatMessage = {
         id: wire.id,
         peer: session.peer,
@@ -353,6 +422,7 @@ export class Messenger {
         this.router.send({ id: crypto.randomUUID(), to: session.peer, kind: "ack", payload: { msg: ackMsg } });
       }
     } else if (wire.t === "ack") {
+      if (wire.status !== "delivered" && wire.status !== "read") return;
       const list = await db.listMessages(session.peer);
       const msg = list.find((m) => m.id === wire.id);
       if (msg && msg.status !== "read") {
@@ -364,10 +434,11 @@ export class Messenger {
       const m = wire.meta;
       const valid =
         typeof m?.id === "string" &&
+        MSG_ID.test(m.id) &&
         Number.isInteger(m.size) && m.size >= 0 && m.size <= MAX_FILE_SIZE &&
         Number.isInteger(m.chunkSize) && m.chunkSize > 0 &&
         m.chunks === Math.max(1, Math.ceil(m.size / m.chunkSize));
-      if (!valid || this.assemblers.size >= MAX_PENDING_TRANSFERS) return;
+      if (!valid || this.assemblers.size >= MAX_PENDING_TRANSFERS || (await db.hasMessage(m.id))) return;
       const meta: FileMeta = {
         ...m,
         name: String(m.name).replace(/[\/\\\u0000-\u001f]/g, "_").slice(0, 120) || "file",

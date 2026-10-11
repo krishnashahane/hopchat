@@ -178,9 +178,34 @@ body::after {
   display: none;
 }
 
+/* Dynamic viewport height: on phones 100vh sits under the browser toolbar and hides the composer. */
+.app-root {
+  height: 100vh;
+  height: 100dvh;
+  width: 100%;
+  overflow: hidden;
+}
+.scroll-pane {
+  height: 100%;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 @media (max-width: 760px) {
   .workspace {
     grid-template-columns: 1fr;
+  }
+  /* 16px stops iOS Safari from zooming the page when a field gets focus. */
+  .input,
+  input,
+  textarea {
+    font-size: 16px;
+  }
+  .btn {
+    min-height: 40px;
+  }
+  .boot-log {
+    font-size: 11px;
   }
   .workspace[data-view="list"] .chat-pane {
     display: none;

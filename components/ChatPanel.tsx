@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "@/lib/hooks/useApp";
 import type { ChatMessage, MessageStatus } from "@/lib/types";
+import { VerifyContact } from "./VerifyContact";
 
 function fmtSize(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -124,6 +125,7 @@ export function ChatPanel() {
   const [text, setText] = useState("");
   const [destruct, setDestruct] = useState<number>(0);
   const [fileErr, setFileErr] = useState<string | null>(null);
+  const [verifying, setVerifying] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const contact = contacts.find((c) => c.address === activeAddr);
@@ -190,8 +192,8 @@ export function ChatPanel() {
     setFileErr(null);
     try {
       await sendFile(file);
-    } catch {
-      setFileErr("File too large (max 8 MB).");
+    } catch (err) {
+      setFileErr(err instanceof Error ? err.message : "Could not send file.");
     }
   };
 
@@ -223,7 +225,18 @@ export function ChatPanel() {
                 : "public room · anyone who knows the name can read"}
           </div>
         </div>
+        {contact && (
+          <button
+            className="btn"
+            onClick={() => setVerifying(true)}
+            style={{ marginLeft: "auto", padding: "4px 10px", fontSize: 11, color: contact.verified ? "var(--accent)" : "var(--fg-dim)" }}
+            title="compare safety numbers"
+          >
+            {contact.verified ? "✓ verified" : "verify"}
+          </button>
+        )}
       </div>
+      {contact && verifying && <VerifyContact contact={contact} onClose={() => setVerifying(false)} />}
 
       <div className="flex-1 overflow-y-auto px-4 py-4" style={{ minHeight: 0 }}>
         {messages.length === 0 && (

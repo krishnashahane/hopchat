@@ -85,9 +85,23 @@ describe("MeshRouter", () => {
     const deliver = vi.fn();
     r.onDeliver(deliver);
     const a = mockTransport("a");
+    const b = mockTransport("b");
     r.addTransport(a.t);
-    a.inject(pkt({ to: "ME", ts: Date.now() - 10_000 }));
+    r.addTransport(b.t);
+    a.inject(pkt({ to: "OTHER", ts: Date.now() - 10_000 }));
+    expect(b.broadcast).not.toHaveBeenCalled();
+    a.inject(pkt({ to: "ME", ts: Date.now() - 25 * 3600_000 }));
     expect(deliver).not.toHaveBeenCalled();
+  });
+
+  it("accepts direct packets the relay held while we were offline", () => {
+    const r = new MeshRouter({ selfId: "ME", maxAgeMs: 1000 });
+    const deliver = vi.fn();
+    r.onDeliver(deliver);
+    const a = mockTransport("a");
+    r.addTransport(a.t);
+    a.inject(pkt({ to: "ME", ts: Date.now() - 3600_000 }));
+    expect(deliver).toHaveBeenCalledOnce();
   });
 
   it("floods originated packets to all transports", () => {

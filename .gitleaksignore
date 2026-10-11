@@ -1,0 +1,2 @@
+# Public P-256 key in a test fixture (not a secret); replaced by a generated key since.
+cf0ce5242e25d2b25c9daeb667f4acbcb5dec3ef:lib/server/push.test.ts:generic-api-key:4

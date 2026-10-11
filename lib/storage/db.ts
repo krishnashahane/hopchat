@@ -22,6 +22,7 @@ export interface StoredSession {
   ratchet: SerializedRatchet;
   /** Pending handshake offer JSON, retransmitted until established (initiator only). */
   offer?: string;
+  seenEk?: string[];
 }
 
 export interface StoredRoom {
@@ -303,6 +304,11 @@ export async function addMessage(m: ChatMessage): Promise<void> {
   const row = await encodeMessage(m);
   const db = await getDB();
   await db.put("messages", row);
+}
+
+export async function hasMessage(id: string): Promise<boolean> {
+  const db = await getDB();
+  return (await db.getKey("messages", id)) !== undefined;
 }
 
 export async function updateMessage(m: ChatMessage): Promise<void> {
