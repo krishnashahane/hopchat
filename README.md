@@ -1,151 +1,113 @@
 # HopChat
 
-**Decentralized, offline-first, end-to-end encrypted mesh messaging.**
-No phone number. No email. No account. No server that can read your messages.
+**Private, offline-first messaging over a peer-to-peer mesh.**
 
-HopChat is a peer-to-peer messenger. Your identity is a set of cryptographic keys
-generated on your device. Messages are sealed end-to-end with a **hybrid
-post-quantum** scheme and hop across a self-healing mesh of nearby peers — over
-WebRTC data channels and same-device broadcast today, with Bluetooth LE / Wi-Fi
-Direct transports planned. Relays only ever see opaque ciphertext.
+HopChat is an account-free messaging app with local-first storage, direct WebRTC connections, and an optional store-and-forward relay. The web client uses Next.js and TypeScript. A separate native iOS/macOS client lives in [`hopchat-native/`](./hopchat-native).
 
-> Live: **https://hopchat.in**
+**Live web app:** [https://hopchat.in](https://hopchat.in)
 
----
-
-## Why HopChat
-
-- **Offline-first** — the mesh routes messages peer-to-peer; no central server is required to deliver a message.
-- **Privacy-first** — no identifiers, no tracking, no ads. History is local-first (IndexedDB), never uploaded.
-- **Post-quantum secure** — X25519 **+ ML-KEM-768** (NIST FIPS 203) hybrid key agreement, so messages stay confidential even against future quantum adversaries.
-- **Forward secret** — every message uses a fresh ephemeral key.
-- **Zero-trust transport** — relays cannot read, forge, or attribute messages; every envelope is signed (Ed25519) and AEAD-sealed (AES-256-GCM).
+> **Security note:** HopChat implements end-to-end encryption, but this repository has not had a full independent security audit. No implementation should be treated as invulnerable. Read [SECURITY.md](./SECURITY.md) and [THREATMODEL.md](./THREATMODEL.md) before using it for high-risk communications.
 
 ## Features
 
-- **No registration** — no email, phone or account. Your identity is a keypair made on your device.
-- **Multi-hop mesh** — packets are relayed peer-to-peer up to **7 hops**, deduplicated and replay-checked.
-- **End-to-end encryption** — 1:1 chats use a post-quantum handshake + Double Ratchet; relays only see ciphertext.
-- **IRC-style commands** — `/join #room [password]`, `/leave`, `/msg`, `/nick`, `/who`, `/clear`, `/panic`, `/help`.
-- **Password-protected rooms** — room key = Argon2id(password, name); posts are signed by their author,
-  and the relay only accepts posts signed with a key derived from the room key.
-- **Safety numbers** — compare a 60-digit number with a contact to prove nobody swapped keys.
-- **Encrypted backup** — move your identity, contacts and rooms to a new device (Argon2id-sealed file).
-- **Notifications (opt-in)** — empty Web Push wake-ups when a message waits on the relay; no content or sender.
-- **Panic mode** — tap the HOPCHAT logo 3 times to wipe keys, contacts, messages and caches instantly.
-- **Location channels (optional)** — `/geo city` (or `/geo <geohash>`) joins a public, bitchat-compatible
-  channel for your area over Nostr. Needs internet; posts are public; each area uses an unlinkable key.
-- **Encrypted at rest** — messages, files, sessions, contacts and room keys are sealed in IndexedDB
-  under a data key that lives inside the identity vault.
-- **Works when the internet doesn't** — same-device and direct WebRTC links need no server; the optional
-  internet relay bridges distant peers and can be switched off.
+- **No account required.** Identity keys are generated on-device.
+- **End-to-end encryption.** The web implementation uses a hybrid X25519 + ML-KEM-768 handshake, Ed25519 signatures, AES-GCM, and ratcheted 1:1 sessions.
+- **Peer-to-peer mesh.** BroadcastChannel and WebRTC transports route packets through a bounded multi-hop mesh.
+- **Optional internet relay.** A serverless API stores opaque packets in Upstash Redis for store-and-forward delivery. Relay-backed delivery requires configuration.
+- **Rooms and file transfer.** Password-derived room keys, signed room posts, and bounded encrypted file transfers.
+- **Safety numbers and encrypted backups.** Verify a contact out of band and export an encrypted backup for transfer to another device.
+- **Optional Web Push.** Notifications are generic wake-ups; message content is not included in the push payload.
+- **Local-first history.** IndexedDB stores conversations and contacts; sensitive fields are encrypted at rest.
+- **Optional location channels.** `/geo` uses public Nostr relays. Posts are public and should not be treated as private messages.
+- **Panic mode.** Removes local app data when explicitly triggered.
+- **Native client.** Bluetooth LE mesh is implemented in `hopchat-native/`; ordinary browser JavaScript cannot access Bluetooth mesh APIs.
 
-Bluetooth LE mesh (30–100 m, no network at all) needs native radio access that browsers don't expose; it
-lives in the native iOS/macOS client in [`hopchat-native/`](./hopchat-native), which is wire-compatible with bitchat.
+See [ARCHITECTURE.md](./ARCHITECTURE.md) and [PROTOCOL.md](./PROTOCOL.md) for implementation details.
 
-## Cryptography
+## Requirements
 
-| Purpose | Primitive |
-|---|---|
-| Identity / signatures | Ed25519 |
-| Classical key agreement | X25519 (ECDH, ephemeral → forward secrecy) |
-| Post-quantum KEM | ML-KEM-768 (FIPS 203) |
-| Key derivation | HKDF-SHA-256 |
-| Authenticated encryption | AES-256-GCM |
-| At-rest vault | Argon2id → AES-256-GCM, or a non-extractable WebCrypto key |
-| Address | Crockford-Base32 fingerprint of the public key bundle |
+- Node.js 24 or newer
+- npm
+- A modern browser; HTTPS is required for some production browser APIs
 
-Per message the sender derives `HKDF(X25519(eph, recipient) ‖ ML-KEM.encaps(recipient))`,
-AEAD-seals the plaintext (AAD binds both identities), and Ed25519-signs the transcript.
-See [`ARCHITECTURE.md`](./ARCHITECTURE.md) and [`SECURITY.md`](./SECURITY.md).
-
-## Mesh networking
-
-A transport-agnostic `MeshRouter` performs controlled-flood multi-hop routing with
-per-packet deduplication, TTL, and a replay window. Transports plug in behind a
-uniform interface:
-
-- **WebRTC** — direct P2P links, serverless invite-code (offer/answer) handshake.
-- **Local bus** — instant same-origin/same-device mesh via `BroadcastChannel`.
-- **Internet relay** — store-and-forward of sealed packets (Upstash Redis, 24 h retention); user can switch it off.
-  Sealed sender: the relay sees only the recipient. Sends are paced and retried; inbox polls are signed by
-  the identity key and corrected for device clock skew.
-- **TURN (optional)** — `/api/ice` hands out short-lived TURN credentials so WebRTC links work behind strict NAT.
-- *(native client)* Bluetooth LE. *(roadmap)* Wi-Fi Direct, Wi-Fi Aware.
-
-Because payloads are end-to-end sealed, any peer can relay without learning content.
-
-## Develop
-
-Requires Node 24+.
+## Run locally
 
 ```bash
-npm install
-npm run dev        # http://localhost:3000
-npm run build      # production build
-npm test           # unit tests (crypto, mesh, relay client, storage)
-npm run typecheck  # strict TypeScript
+git clone https://github.com/krishnashahane/hopchat.git
+cd hopchat
+npm ci
+npm run dev
 ```
 
-The relay endpoint (`/api/relay`) needs an Upstash Redis REST URL + token. Without them it
-answers `503` and the app keeps working over local and WebRTC links.
+Open [http://localhost:3000](http://localhost:3000).
+
+## Verify before deploying
 
 ```bash
-vercel env pull .env.local                 # KV_REST_API_URL, KV_REST_API_TOKEN (never commit)
-set -a; source .env.local; set +a
-npx vitest run lib/server/relay.int.test.ts   # live relay test; creates short-lived keys only
+npm run typecheck
+npm test
+npm run build
+npm audit --audit-level=high
 ```
 
-## Deploy
+Run all checks before release. Live-service integration tests are skipped unless their required environment variables are present.
 
-Vercel project `hopchat`, domain `hopchat.in` (`www` → apex 308).
+## Optional services
 
-| Env | Needed for |
+Without Redis credentials, the app can still run with local and direct WebRTC transports, but relay-backed delivery and relay-dependent services are unavailable.
+
+Create a local `.env.local` file (never commit it) or configure variables in the deployment provider:
+
+| Variable | Purpose |
 |---|---|
-| `KV_REST_API_URL`, `KV_REST_API_TOKEN` (or `UPSTASH_REDIS_REST_*`) | relay, rate limits, push and TURN APIs |
-| `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | notifications (`npx web-push generate-vapid-keys`) |
-| `TURN_URLS` + `TURN_SECRET` (coturn REST) or `TURN_USERNAME`/`TURN_CREDENTIAL` | TURN relay for WebRTC |
+| `KV_REST_API_URL`, `KV_REST_API_TOKEN` | Upstash Redis REST for relay, replay protection, rate limits, and stored subscriptions |
+| `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | Optional Web Push notifications |
+| `TURN_URLS`, `TURN_SECRET` | Optional short-lived TURN credentials, when using coturn REST authentication |
+| `TURN_USERNAME`, `TURN_CREDENTIAL` | Alternative static TURN credentials where supported by the deployment configuration |
 
-Everything optional degrades cleanly: without Redis the app is local/WebRTC-only, without VAPID the
-notification toggle reports it's unavailable, without TURN links use STUN only.
-`GET /api/health` reports `{ ok, relay, turn, push }` (booleans only).
+The legacy `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` environment names are also supported. Check `lib/server/` for the exact behaviour of optional services before enabling them.
 
-CI runs secret scan, typecheck, tests, build and `npm audit`; uptime (incl. `/api/health`) and ZAP
-workflows probe the live site.
+Never store secrets in source files, commit environment files, or paste production credentials into issue reports. The root `.gitignore` excludes environment files.
 
-## Limits
+## Production build and deployment
 
-| | |
-|---|---|
-| Text message | 8,000 characters (rooms 2,000) |
-| File | 8 MB, 16 KB chunks |
-| Relay inbox | 600 packets, 24 h |
-| Relay sends | 300/min per IP, 600/min per destination |
-| Direct WebRTC | STUN, plus TURN when configured; 1 MB send buffer, 16 MB backlog per peer |
-| Relay APIs | single-use signatures, ±60 s clock window (server clock adopted on mismatch) |
+```bash
+npm ci
+npm run typecheck
+npm test
+npm run build
+npm start
+```
+
+Use a host compatible with Next.js 16 and Node.js 24. Add service credentials through the host's secret/environment-variable controls. After deployment, verify the home page and the API routes that correspond to the features you enabled.
+
+The web commands above do not build the native app. Follow [`hopchat-native/README.md`](./hopchat-native/README.md) for its separate toolchain and build/test instructions.
 
 ## Project layout
 
 ```
-app/                 Next.js App Router (client-only UI shell)
-components/           Hacker-terminal UI (boot, sidebar, chat, modals)
-lib/crypto/          identity · e2e (hybrid PQC) · vault · encoding
-lib/mesh/            router · webrtc · localbus · relay transports
-lib/server/          relay API: Redis, auth (signed headers), ICE/TURN, push, HTTP helpers
-lib/storage/         IndexedDB local-first persistence
-lib/messenger.ts     application service (seal → route → open)
-lib/hooks/useApp.tsx React state/context
+app/                 Next.js routes, metadata, and relay APIs
+components/          Web UI components
+lib/crypto/          Identity, handshake, encryption, ratchet, vault
+lib/mesh/            Mesh router and WebRTC/local/relay transports
+lib/server/          Relay and optional service helpers
+lib/storage/         IndexedDB persistence and at-rest encryption
+lib/messenger.ts     Application messaging service
+public/              Icons, service worker, security.txt
+hopchat-native/      Native iOS/macOS app and tests
+mobile/              Separate React Native/Expo scaffold
 ```
 
-## Security posture
+## Security and privacy limits
 
-- Strict Content-Security-Policy, HSTS, `frame-ancestors 'none'`, `Referrer-Policy: no-referrer`, no telemetry.
-- Ratchet decryption is all-or-nothing: forged or replayed packets cannot break a conversation.
-- No secrets in the repo; identity keys never leave the device.
-- Dependencies pinned; `npm audit` clean (0 vulnerabilities).
+- Encryption protects message content; it does not eliminate traffic analysis. Relays or peers may observe IP addresses, timing, or routing metadata.
+- Relay delivery depends on deployment configuration, network access, and service availability.
+- Location-channel posts are public to the selected Nostr relays.
+- A compromised device/browser, malicious extension, weak passphrase, denial-of-service attack, or implementation defect can undermine security.
+- Automated tests, dependency checks, and scanners reduce risk but do not prove that the system is secure.
 
-Report vulnerabilities per [`SECURITY.md`](./SECURITY.md).
+Report vulnerabilities privately using [GitHub Security Advisories](https://github.com/krishnashahane/hopchat/security/advisories/new) or the process in [SECURITY.md](./SECURITY.md).
 
 ## License
 
-MIT — see [`LICENSE`](./LICENSE).
+The web project uses the [MIT License](./LICENSE). The native subtree has a separate license; read [`hopchat-native/LICENSE`](./hopchat-native/LICENSE) before redistributing that component.
